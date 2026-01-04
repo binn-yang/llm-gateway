@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(env)",
+      "Bash(RUST_BACKTRACE=1 cargo run:*)",
+      "Bash(cargo build:*)",
+      "Bash(RUST_BACKTRACE=full cargo run:*)",
+      "Bash(python3:*)",
+      "Bash(cargo run:*)",
+      "Bash(timeout 5 cargo run:*)",
+      "Bash(timeout 3 cargo run:*)",
+      "Bash(curl:*)",
+      "Bash(pkill:*)",
+      "Bash(cargo fix:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}
