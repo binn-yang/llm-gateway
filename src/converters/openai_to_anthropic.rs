@@ -24,7 +24,17 @@ pub fn convert_request(openai_req: &ChatCompletionRequest) -> Result<MessagesReq
     let max_tokens = openai_req.max_tokens.unwrap_or(4096);
 
     // Anthropic temperature is 0-1, clip if necessary
-    let temperature = openai_req.temperature.map(|t| t.min(1.0));
+    let temperature = openai_req.temperature.map(|t| {
+        if t > 1.0 {
+            tracing::warn!(
+                "Temperature {} exceeds Anthropic maximum (1.0), clipping to 1.0",
+                t
+            );
+            1.0
+        } else {
+            t
+        }
+    });
 
     // Convert stop sequences
     let stop_sequences = openai_req.stop.clone();

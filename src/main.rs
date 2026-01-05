@@ -1,4 +1,4 @@
-use axum::{middleware, routing::{get, post}, Router};
+use axum::{extract::DefaultBodyLimit, middleware, routing::{get, post}, Router};
 use llm_gateway::{auth, config, handlers, metrics, router::ModelRouter};
 use std::{net::SocketAddr, sync::Arc};
 use tower_http::trace::TraceLayer;
@@ -83,6 +83,8 @@ fn create_router(
         .with_state(metrics_handle)
         // Merge authenticated routes
         .merge(auth_routes)
+        // Security: Limit request body size to 10MB to prevent memory exhaustion attacks
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
 }
 

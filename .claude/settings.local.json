@@ -13,7 +13,13 @@
       "Bash(pkill:*)",
       "Bash(cargo fix:*)",
       "Bash(git init:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(cloc:*)",
+      "Bash(find:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo test:*)",
+      "Bash(wc:*)"
     ]
   }
 }

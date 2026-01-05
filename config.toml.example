@@ -1,0 +1,71 @@
+[server]
+host = "0.0.0.0"
+port = 8080
+log_level = "info"
+log_format = "json"
+
+# API Keys Authentication
+# Generate secure random keys for production use
+[[api_keys]]
+key = "sk-gateway-YOUR-KEY-HERE-001"
+name = "frontend-app"
+enabled = true
+
+[[api_keys]]
+key = "sk-gateway-YOUR-KEY-HERE-002"
+name = "backend-service"
+enabled = true
+
+# Model Mapping Configuration
+# Only include models for enabled providers
+[models."qwen3-0.6b-mlx"]
+provider = "openai"
+api_model = "qwen3-0.6b-mlx"
+
+[models.gpt-4-turbo]
+provider = "openai"
+api_model = "gpt-4-turbo-2024-04-09"
+
+# Uncomment these when Anthropic provider is enabled
+# [models."claude-3-5-sonnet"]
+# provider = "anthropic"
+# api_model = "claude-3-5-sonnet-20241022"
+
+# [models."claude-3-opus"]
+# provider = "anthropic"
+# api_model = "claude-3-opus-20240229"
+
+# Uncomment these when Gemini provider is enabled
+# [models."gemini-1.5-pro"]
+# provider = "gemini"
+# api_model = "models/gemini-1.5-pro-latest"
+
+# [models."gemini-2.0-flash"]
+# provider = "gemini"
+# api_model = "models/gemini-2.0-flash-exp"
+
+# Provider Configurations
+[providers.openai]
+enabled = true
+api_key = "sk-YOUR-OPENAI-API-KEY-HERE"
+base_url = "https://api.openai.com/v1"
+timeout_seconds = 300
+
+[providers.anthropic]
+enabled = false
+api_key = "sk-ant-YOUR-ANTHROPIC-KEY-HERE"
+base_url = "https://api.anthropic.com/v1"
+timeout_seconds = 300
+api_version = "2023-06-01"
+
+[providers.gemini]
+enabled = false
+api_key = "YOUR-GEMINI-KEY-HERE"
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+timeout_seconds = 300
+
+# Prometheus Metrics
+[metrics]
+enabled = true
+endpoint = "/metrics"
+include_api_key_hash = true

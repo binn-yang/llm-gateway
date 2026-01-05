@@ -47,6 +47,7 @@ mod tests {
     };
     use crate::router::ModelRouter;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     fn create_test_state() -> AppState {
         let mut models = HashMap::new();

@@ -28,7 +28,15 @@ A high-performance, minimal LLM proxy gateway written in Rust that provides a un
 
 ### 1. Configuration
 
-Create `config.toml`:
+**Important:** Never commit `config.toml` with real API keys to version control!
+
+Create your configuration file from the example:
+
+```bash
+cp config.toml.example config.toml
+```
+
+Then edit `config.toml` and replace the placeholder values with your actual API keys:
 
 ```toml
 [server]

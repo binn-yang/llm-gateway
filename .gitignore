@@ -1,1 +1,22 @@
 /target
+
+# Configuration files with secrets
+config.toml
+
+# Environment files
+.env
+.env.local
+
+# Secrets
+*.key
+*.pem
+*.p12
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

@@ -14,7 +14,13 @@ pub fn convert_response(
     let candidate = gemini_resp
         .candidates
         .first()
-        .ok_or_else(|| AppError::ConversionError("No candidates in Gemini response".to_string()))?;
+        .ok_or_else(|| {
+            tracing::error!(
+                "Gemini returned empty candidates. Response: {:?}",
+                gemini_resp
+            );
+            AppError::ConversionError("No candidates in Gemini response".to_string())
+        })?;
 
     // Extract text from first part
     let content = candidate

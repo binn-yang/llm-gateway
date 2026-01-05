@@ -17,8 +17,12 @@ impl Provider {
             Provider::Gemini => "gemini",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Result<Self, AppError> {
+impl std::str::FromStr for Provider {
+    type Err = AppError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "openai" => Ok(Provider::OpenAI),
             "anthropic" => Ok(Provider::Anthropic),
@@ -58,6 +62,24 @@ impl ModelRouter {
     /// Route a model name to provider information
     /// Used by the OpenAI endpoint (/v1/chat/completions) to determine which provider to use
     pub fn route(&self, model: &str) -> Result<RouteInfo, AppError> {
+        // Validate model name to prevent injection attacks
+        if model.is_empty() || model.len() > 256 {
+            return Err(AppError::ModelNotFound(
+                "Invalid model name: must be between 1 and 256 characters".to_string(),
+            ));
+        }
+
+        // Sanitize model name for security (allow only alphanumeric, dash, dot, underscore)
+        let is_valid = model
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '.' || c == '_');
+        if !is_valid {
+            return Err(AppError::ModelNotFound(format!(
+                "Invalid model name '{}': only alphanumeric characters, hyphens, dots, and underscores are allowed",
+                model
+            )));
+        }
+
         // Look up the model in the configuration
         let model_config = self.config.models.get(model).ok_or_else(|| {
             AppError::ModelNotFound(format!(
@@ -68,7 +90,7 @@ impl ModelRouter {
         })?;
 
         // Parse the provider
-        let provider = Provider::from_str(&model_config.provider)?;
+        let provider: Provider = model_config.provider.parse()?;
 
         // Check if the provider is enabled
         match provider {
@@ -117,7 +139,7 @@ impl ModelRouter {
             .models
             .iter()
             .filter(|(_, config)| {
-                Provider::from_str(&config.provider)
+                config.provider.parse::<Provider>()
                     .map(|p| &p == provider)
                     .unwrap_or(false)
             })
@@ -285,12 +307,12 @@ mod tests {
 
     #[test]
     fn test_provider_from_string() {
-        assert_eq!(Provider::from_str("openai").unwrap(), Provider::OpenAI);
-        assert_eq!(Provider::from_str("anthropic").unwrap(), Provider::Anthropic);
-        assert_eq!(Provider::from_str("gemini").unwrap(), Provider::Gemini);
-        assert_eq!(Provider::from_str("OpenAI").unwrap(), Provider::OpenAI); // case insensitive
+        assert_eq!("openai".parse::<Provider>().unwrap(), Provider::OpenAI);
+        assert_eq!("anthropic".parse::<Provider>().unwrap(), Provider::Anthropic);
+        assert_eq!("gemini".parse::<Provider>().unwrap(), Provider::Gemini);
+        assert_eq!("OpenAI".parse::<Provider>().unwrap(), Provider::OpenAI); // case insensitive
 
-        assert!(Provider::from_str("invalid").is_err());
+        assert!("invalid".parse::<Provider>().is_err());
     }
 
     #[test]

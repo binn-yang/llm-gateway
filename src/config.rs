@@ -75,7 +75,7 @@ pub fn load_config() -> anyhow::Result<Config> {
 }
 
 fn validate_config(cfg: &Config) -> anyhow::Result<()> {
-    // 验证至少有一个启用的提供商
+    // Validate at least one provider is enabled
     if !cfg.providers.openai.enabled
         && !cfg.providers.anthropic.enabled
         && !cfg.providers.gemini.enabled
@@ -83,19 +83,19 @@ fn validate_config(cfg: &Config) -> anyhow::Result<()> {
         anyhow::bail!("At least one provider must be enabled");
     }
 
-    // 验证至少有一个 API Key
+    // Validate at least one API key is configured
     if cfg.api_keys.is_empty() {
         anyhow::bail!("At least one API key must be configured");
     }
 
-    // 验证所有 API Key 都有名称
+    // Validate all API keys have names
     for key in &cfg.api_keys {
         if key.name.is_empty() {
             anyhow::bail!("API key name cannot be empty");
         }
     }
 
-    // 验证模型映射中的 provider 是有效的
+    // Validate model mappings have valid providers
     for (model_name, model_config) in &cfg.models {
         match model_config.provider.as_str() {
             "openai" => {
