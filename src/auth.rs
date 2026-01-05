@@ -16,7 +16,7 @@ pub struct AuthInfo {
 /// Authentication middleware
 /// Extracts and validates the Bearer token from the Authorization header
 pub async fn auth_middleware(
-    State(config): State<Arc<Config>>,
+    State(config): State<Arc<arc_swap::ArcSwap<Config>>>,
     mut req: Request,
     next: Next,
 ) -> Result<Response, AppError> {
@@ -29,6 +29,9 @@ pub async fn auth_middleware(
 
     // Extract Bearer token
     let token = extract_bearer_token(auth_header)?;
+
+    // Load current configuration
+    let config = config.load();
 
     // Validate token against configured API keys
     let api_key_config = config

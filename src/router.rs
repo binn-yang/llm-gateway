@@ -51,11 +51,11 @@ pub struct RouteInfo {
 
 /// Model router that maps model names to providers
 pub struct ModelRouter {
-    config: Arc<Config>,
+    config: Arc<arc_swap::ArcSwap<Config>>,
 }
 
 impl ModelRouter {
-    pub fn new(config: Arc<Config>) -> Self {
+    pub fn new(config: Arc<arc_swap::ArcSwap<Config>>) -> Self {
         Self { config }
     }
 
@@ -80,8 +80,11 @@ impl ModelRouter {
             )));
         }
 
+        // Load current configuration
+        let config = self.config.load();
+
         // Look up the model in the configuration
-        let model_config = self.config.models.get(model).ok_or_else(|| {
+        let model_config = config.models.get(model).ok_or_else(|| {
             AppError::ModelNotFound(format!(
                 "Model '{}' not found in configuration. Available models: {}",
                 model,
@@ -95,21 +98,21 @@ impl ModelRouter {
         // Check if the provider is enabled
         match provider {
             Provider::OpenAI => {
-                if !self.config.providers.openai.enabled {
+                if !config.providers.openai.enabled {
                     return Err(AppError::ProviderDisabled(
                         "OpenAI provider is disabled".to_string(),
                     ));
                 }
             }
             Provider::Anthropic => {
-                if !self.config.providers.anthropic.enabled {
+                if !config.providers.anthropic.enabled {
                     return Err(AppError::ProviderDisabled(
                         "Anthropic provider is disabled".to_string(),
                     ));
                 }
             }
             Provider::Gemini => {
-                if !self.config.providers.gemini.enabled {
+                if !config.providers.gemini.enabled {
                     return Err(AppError::ProviderDisabled(
                         "Gemini provider is disabled".to_string(),
                     ));
@@ -130,12 +133,14 @@ impl ModelRouter {
 
     /// Get list of available models
     pub fn available_models(&self) -> Vec<String> {
-        self.config.models.keys().cloned().collect()
+        let config = self.config.load();
+        config.models.keys().cloned().collect()
     }
 
     /// Get all models for a specific provider
     pub fn models_for_provider(&self, provider: &Provider) -> Vec<String> {
-        self.config
+        let config = self.config.load();
+        config
             .models
             .iter()
             .filter(|(_, config)| {

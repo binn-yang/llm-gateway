@@ -19,7 +19,7 @@ use std::time::Instant;
 /// Application state
 #[derive(Clone)]
 pub struct AppState {
-    pub config: Arc<crate::config::Config>,
+    pub config: Arc<arc_swap::ArcSwap<crate::config::Config>>,
     pub router: Arc<ModelRouter>,
     pub http_client: reqwest::Client,
 }
@@ -83,10 +83,13 @@ async fn handle_openai_request(
     model: &str,
     start: Instant,
 ) -> Result<Response, AppError> {
+    // Load current configuration
+    let config = state.config.load();
+
     // Call OpenAI API
     let response = providers::openai::chat_completions(
         &state.http_client,
-        &state.config.providers.openai,
+        &config.providers.openai,
         request,
     )
     .await?;
@@ -142,10 +145,13 @@ async fn handle_anthropic_request(
         "Converted OpenAI request to Anthropic format"
     );
 
+    // Load current configuration
+    let config = state.config.load();
+
     // Call Anthropic API
     let response = providers::anthropic::create_message(
         &state.http_client,
-        &state.config.providers.anthropic,
+        &config.providers.anthropic,
         anthropic_request,
     )
     .await?;
@@ -207,10 +213,13 @@ async fn handle_gemini_request(
         "Converted OpenAI request to Gemini format"
     );
 
+    // Load current configuration
+    let config = state.config.load();
+
     // Call Gemini API
     let response = providers::gemini::generate_content(
         &state.http_client,
-        &state.config.providers.gemini,
+        &config.providers.gemini,
         api_model,
         gemini_request,
         is_stream,

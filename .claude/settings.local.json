@@ -19,7 +19,14 @@
       "Bash(find:*)",
       "Bash(cargo clippy:*)",
       "Bash(cargo test:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(./target/release/llm-gateway start:*)",
+      "Bash(cat:*)",
+      "Bash(ps:*)",
+      "Bash(OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES ./target/release/llm-gateway start:*)",
+      "Bash(./target/release/llm-gateway reload:*)",
+      "Bash(./target/release/llm-gateway stop:*)",
+      "Bash(chmod:*)"
     ]
   }
 }

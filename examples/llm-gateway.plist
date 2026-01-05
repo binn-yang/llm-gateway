@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.llmgateway</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/llm-gateway</string>
+        <string>start</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/opt/llm-gateway</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>CONFIG_PATH</key>
+        <string>/opt/llm-gateway/config.toml</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/llm-gateway.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/llm-gateway.err.log</string>
+
+    <key>UserName</key>
+    <string>_llmgateway</string>
+</dict>
+</plist>

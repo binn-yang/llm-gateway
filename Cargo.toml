@@ -21,6 +21,14 @@ toml = "0.8"
 # 配置管理
 config = "0.14"
 
+# CLI and Process Management
+clap = { version = "4.5", features = ["derive", "cargo", "env"] }
+daemonize = "0.5"
+fs2 = "0.4"
+colored = "2.1"
+arc-swap = "1.7"
+nix = { version = "0.27", features = ["signal"] }
+
 # 日志与追踪
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
