@@ -161,3 +161,32 @@ mod tests {
         assert!(result.is_none());
     }
 }
+
+/// 创建原生 Anthropic SSE 流（无协议转换）
+/// 直接转发 Anthropic 的 SSE 事件，保持原生格式
+pub fn create_native_anthropic_sse_stream(
+    response: reqwest::Response,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let stream = response.bytes_stream().map(|chunk_result| {
+        match chunk_result {
+            Ok(bytes) => {
+                // 直接转发原始 SSE 数据
+                let text = String::from_utf8_lossy(&bytes);
+
+                // SSE 格式：每行可能是 "event: xxx" 或 "data: {...}"
+                // 直接转发整个块，保持 Anthropic 原生格式
+                if !text.is_empty() {
+                    Ok(Event::default().data(text.to_string()))
+                } else {
+                    Ok(Event::default().data(""))
+                }
+            }
+            Err(e) => {
+                tracing::error!("Native Anthropic stream error: {}", e);
+                Ok(Event::default().data(""))
+            }
+        }
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}

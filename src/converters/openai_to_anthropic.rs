@@ -1,7 +1,7 @@
 use crate::{
     error::AppError,
     models::{
-        anthropic::{Message, MessagesRequest},
+        anthropic::{Message, MessageContent, MessagesRequest},
         openai::{ChatCompletionRequest, ChatMessage},
     },
 };
@@ -16,7 +16,7 @@ pub fn convert_request(openai_req: &ChatCompletionRequest) -> Result<MessagesReq
         .iter()
         .map(|msg| Message {
             role: msg.role.clone(),
-            content: msg.content.clone(),
+            content: MessageContent::Text(msg.content.clone()),
         })
         .collect();
 
@@ -54,10 +54,10 @@ pub fn convert_request(openai_req: &ChatCompletionRequest) -> Result<MessagesReq
 
 /// Extract system message from OpenAI messages
 /// Returns (system_prompt, remaining_messages)
-fn extract_system_message(messages: &[ChatMessage]) -> (Option<String>, Vec<ChatMessage>) {
+fn extract_system_message(messages: &[ChatMessage]) -> (Option<MessageContent>, Vec<ChatMessage>) {
     if let Some(first) = messages.first() {
         if first.role == "system" {
-            let system = Some(first.content.clone());
+            let system = Some(MessageContent::Text(first.content.clone()));
             let rest = messages.iter().skip(1).cloned().collect();
             return (system, rest);
         }
@@ -85,7 +85,10 @@ mod tests {
         ];
 
         let (system, remaining) = extract_system_message(&messages);
-        assert_eq!(system, Some("You are a helpful assistant.".to_string()));
+        assert!(matches!(system, Some(MessageContent::Text(_))));
+        if let Some(MessageContent::Text(text)) = system {
+            assert_eq!(text, "You are a helpful assistant.");
+        }
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].role, "user");
     }
@@ -132,7 +135,10 @@ mod tests {
 
         let anthropic_req = convert_request(&openai_req).unwrap();
         assert_eq!(anthropic_req.model, "claude-3-5-sonnet");
-        assert_eq!(anthropic_req.system, Some("You are helpful.".to_string()));
+        assert!(matches!(anthropic_req.system, Some(MessageContent::Text(_))));
+        if let Some(MessageContent::Text(text)) = &anthropic_req.system {
+            assert_eq!(text, "You are helpful.");
+        }
         assert_eq!(anthropic_req.messages.len(), 1);
         assert_eq!(anthropic_req.messages[0].role, "user");
         assert_eq!(anthropic_req.max_tokens, 100);

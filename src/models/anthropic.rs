@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 pub struct MessagesRequest {
     /// Model to use
     pub model: String,
-    /// System prompt (optional)
+    /// System prompt (optional) - supports both string and content blocks format
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<String>,
+    pub system: Option<MessageContent>,
     /// Messages in the conversation
     pub messages: Vec<Message>,
     /// Maximum tokens to generate (required)
@@ -29,13 +29,23 @@ pub struct MessagesRequest {
     pub stop_sequences: Option<Vec<String>>,
 }
 
+/// Message content - supports both string and content blocks format
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MessageContent {
+    /// Simple text string format: "Hello"
+    Text(String),
+    /// Content blocks format: [{"type": "text", "text": "Hello"}]
+    Blocks(Vec<ContentBlock>),
+}
+
 /// Message in conversation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     /// Role: "user" or "assistant"
     pub role: String,
-    /// Message content
-    pub content: String,
+    /// Message content (supports both string and blocks format)
+    pub content: MessageContent,
 }
 
 /// Anthropic Messages API Response (non-streaming)
@@ -139,10 +149,10 @@ mod tests {
     fn test_serialize_messages_request() {
         let request = MessagesRequest {
             model: "claude-3-5-sonnet-20241022".to_string(),
-            system: Some("You are a helpful assistant.".to_string()),
+            system: Some(MessageContent::Text("You are a helpful assistant.".to_string())),
             messages: vec![Message {
                 role: "user".to_string(),
-                content: "Hello!".to_string(),
+                content: MessageContent::Text("Hello!".to_string()),
             }],
             max_tokens: 1024,
             temperature: Some(0.7),

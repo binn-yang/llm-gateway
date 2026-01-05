@@ -87,6 +87,10 @@ fn create_router(
             "/v1/chat/completions",
             post(handlers::chat_completions::handle_chat_completions),
         )
+        .route(
+            "/v1/messages",
+            post(handlers::messages::handle_messages),
+        )
         .route("/v1/models", get(handlers::models::list_models))
         .layer(middleware::from_fn_with_state(
             config.clone(),
