@@ -43,8 +43,6 @@ impl std::fmt::Display for Provider {
 pub struct RouteInfo {
     /// The provider to use for this model
     pub provider: Provider,
-    /// The actual model name to send to the provider's API
-    pub api_model: String,
     /// Whether protocol conversion is required (true for non-OpenAI providers when using OpenAI endpoint)
     pub requires_conversion: bool,
 }
@@ -60,7 +58,7 @@ impl ModelRouter {
     }
 
     /// Route a model name to provider information
-    /// Used by the OpenAI endpoint (/v1/chat/completions) to determine which provider to use
+    /// Uses prefix matching to determine which provider handles the model
     pub fn route(&self, model: &str) -> Result<RouteInfo, AppError> {
         // Validate model name to prevent injection attacks
         if model.is_empty() || model.len() > 256 {
@@ -69,13 +67,13 @@ impl ModelRouter {
             ));
         }
 
-        // Sanitize model name for security (allow only alphanumeric, dash, dot, underscore)
+        // Sanitize model name for security (allow alphanumeric, dash, dot, underscore, slash)
         let is_valid = model
             .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '.' || c == '_');
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '.' || c == '_' || c == '/');
         if !is_valid {
             return Err(AppError::ModelNotFound(format!(
-                "Invalid model name '{}': only alphanumeric characters, hyphens, dots, and underscores are allowed",
+                "Invalid model name '{}': only alphanumeric characters, hyphens, dots, underscores, and slashes are allowed",
                 model
             )));
         }
@@ -83,17 +81,9 @@ impl ModelRouter {
         // Load current configuration
         let config = self.config.load();
 
-        // Look up the model in the configuration
-        let model_config = config.models.get(model).ok_or_else(|| {
-            AppError::ModelNotFound(format!(
-                "Model '{}' not found in configuration. Available models: {}",
-                model,
-                self.available_models().join(", ")
-            ))
-        })?;
-
-        // Parse the provider
-        let provider: Provider = model_config.provider.parse()?;
+        // Match model to provider using prefix matching
+        let provider_name = self.match_model_to_provider(model, &config)?;
+        let provider: Provider = provider_name.parse()?;
 
         // Check if the provider is enabled
         match provider {
@@ -126,65 +116,64 @@ impl ModelRouter {
 
         Ok(RouteInfo {
             provider,
-            api_model: model_config.api_model.clone(),
             requires_conversion,
         })
     }
 
-    /// Get list of available models
-    pub fn available_models(&self) -> Vec<String> {
-        let config = self.config.load();
-        config.models.keys().cloned().collect()
+    /// Match a model name to a provider using prefix matching
+    /// Returns the provider name if a match is found
+    fn match_model_to_provider(&self, model: &str, config: &Config) -> Result<String, AppError> {
+        // Collect and sort routing rules by prefix length (descending) for longest-match-first
+        let mut rules: Vec<_> = config.routing.rules.iter().collect();
+        rules.sort_by_key(|(prefix, _)| std::cmp::Reverse(prefix.len()));
+
+        // Try each routing rule (longest prefix first)
+        for (prefix, provider) in rules {
+            if model.starts_with(prefix.as_str()) {
+                tracing::debug!(
+                    model = %model,
+                    matched_prefix = %prefix,
+                    provider = %provider,
+                    "Matched model to provider via prefix"
+                );
+                return Ok(provider.clone());
+            }
+        }
+
+        // No prefix matched - use default provider if configured
+        if let Some(default) = &config.routing.default_provider {
+            tracing::debug!(
+                model = %model,
+                provider = %default,
+                "Using default provider for model (no prefix match)"
+            );
+            Ok(default.clone())
+        } else {
+            Err(AppError::ModelNotFound(format!(
+                "Model '{}' does not match any routing prefix and no default provider is configured",
+                model
+            )))
+        }
     }
 
-    /// Get all models for a specific provider
-    pub fn models_for_provider(&self, provider: &Provider) -> Vec<String> {
-        let config = self.config.load();
-        config
-            .models
-            .iter()
-            .filter(|(_, config)| {
-                config.provider.parse::<Provider>()
-                    .map(|p| &p == provider)
-                    .unwrap_or(false)
-            })
-            .map(|(name, _)| name.clone())
-            .collect()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{
-        AnthropicConfig, ApiKeyConfig, MetricsConfig, ModelConfig, ProviderConfig,
-        ProvidersConfig, ServerConfig,
+        AnthropicConfig, ApiKeyConfig, DiscoveryConfig, MetricsConfig, ProviderConfig,
+        ProvidersConfig, RoutingConfig, ServerConfig,
     };
     use std::collections::HashMap;
 
     fn create_test_config() -> Config {
-        let mut models = HashMap::new();
-        models.insert(
-            "gpt-4".to_string(),
-            ModelConfig {
-                provider: "openai".to_string(),
-                api_model: "gpt-4".to_string(),
-            },
-        );
-        models.insert(
-            "claude-3-5-sonnet".to_string(),
-            ModelConfig {
-                provider: "anthropic".to_string(),
-                api_model: "claude-3-5-sonnet-20241022".to_string(),
-            },
-        );
-        models.insert(
-            "gemini-1.5-pro".to_string(),
-            ModelConfig {
-                provider: "gemini".to_string(),
-                api_model: "models/gemini-1.5-pro-latest".to_string(),
-            },
-        );
+        let mut routing_rules = HashMap::new();
+        routing_rules.insert("gpt-".to_string(), "openai".to_string());
+        routing_rules.insert("o1-".to_string(), "openai".to_string());
+        routing_rules.insert("claude-".to_string(), "anthropic".to_string());
+        routing_rules.insert("gemini-".to_string(), "gemini".to_string());
+        routing_rules.insert("models/gemini-".to_string(), "gemini".to_string());
 
         Config {
             server: ServerConfig {
@@ -198,7 +187,16 @@ mod tests {
                 name: "test".to_string(),
                 enabled: true,
             }],
-            models,
+            routing: RoutingConfig {
+                rules: routing_rules,
+                default_provider: Some("openai".to_string()),
+                discovery: DiscoveryConfig {
+                    enabled: true,
+                    cache_ttl_seconds: 3600,
+                    refresh_on_startup: true,
+                    providers_with_listing: vec!["openai".to_string()],
+                },
+            },
             providers: ProvidersConfig {
                 openai: ProviderConfig {
                     enabled: true,
@@ -230,43 +228,62 @@ mod tests {
 
     #[test]
     fn test_route_openai_model() {
-        let config = Arc::new(create_test_config());
+        let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(create_test_config())));
         let router = ModelRouter::new(config);
 
-        let route = router.route("gpt-4").unwrap();
+        let route = router.route("gpt-4-turbo-2024-04-09").unwrap();
         assert_eq!(route.provider, Provider::OpenAI);
-        assert_eq!(route.api_model, "gpt-4");
         assert!(!route.requires_conversion); // OpenAI doesn't need conversion
     }
 
     #[test]
     fn test_route_anthropic_model() {
-        let config = Arc::new(create_test_config());
+        let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(create_test_config())));
         let router = ModelRouter::new(config);
 
-        let route = router.route("claude-3-5-sonnet").unwrap();
+        let route = router.route("claude-3-5-sonnet-20241022").unwrap();
         assert_eq!(route.provider, Provider::Anthropic);
-        assert_eq!(route.api_model, "claude-3-5-sonnet-20241022");
         assert!(route.requires_conversion); // Anthropic requires conversion
     }
 
     #[test]
     fn test_route_gemini_model() {
-        let config = Arc::new(create_test_config());
+        let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(create_test_config())));
         let router = ModelRouter::new(config);
 
         let route = router.route("gemini-1.5-pro").unwrap();
         assert_eq!(route.provider, Provider::Gemini);
-        assert_eq!(route.api_model, "models/gemini-1.5-pro-latest");
         assert!(route.requires_conversion); // Gemini requires conversion
     }
 
     #[test]
-    fn test_route_unknown_model() {
-        let config = Arc::new(create_test_config());
+    fn test_route_gemini_model_with_models_prefix() {
+        let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(create_test_config())));
         let router = ModelRouter::new(config);
 
-        let result = router.route("gpt-5");
+        // Test longest-prefix-first matching (models/gemini- should match before gemini-)
+        let route = router.route("models/gemini-1.5-pro-latest").unwrap();
+        assert_eq!(route.provider, Provider::Gemini);
+        assert!(route.requires_conversion);
+    }
+
+    #[test]
+    fn test_route_unknown_model_with_default() {
+        let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(create_test_config())));
+        let router = ModelRouter::new(config);
+
+        // Unknown model should fallback to default provider (openai)
+        let route = router.route("unknown-model-xyz").unwrap();
+        assert_eq!(route.provider, Provider::OpenAI);
+    }
+
+    #[test]
+    fn test_route_unknown_model_without_default() {
+        let mut config = create_test_config();
+        config.routing.default_provider = None;
+
+        let router = ModelRouter::new(Arc::new(arc_swap::ArcSwap::new(Arc::new(config))));
+        let result = router.route("unknown-model-xyz");
         assert!(result.is_err());
     }
 
@@ -275,39 +292,22 @@ mod tests {
         let mut config = create_test_config();
         config.providers.anthropic.enabled = false;
 
-        let router = ModelRouter::new(Arc::new(config));
-        let result = router.route("claude-3-5-sonnet");
+        let router = ModelRouter::new(Arc::new(arc_swap::ArcSwap::new(Arc::new(config))));
+        let result = router.route("claude-3-5-sonnet-20241022");
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_available_models() {
-        let config = Arc::new(create_test_config());
+    fn test_prefix_matching_priority() {
+        let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(create_test_config())));
         let router = ModelRouter::new(config);
 
-        let models = router.available_models();
-        assert_eq!(models.len(), 3);
-        assert!(models.contains(&"gpt-4".to_string()));
-        assert!(models.contains(&"claude-3-5-sonnet".to_string()));
-        assert!(models.contains(&"gemini-1.5-pro".to_string()));
-    }
+        // Test that gpt- prefix matches for various GPT models
+        assert_eq!(router.route("gpt-4").unwrap().provider, Provider::OpenAI);
+        assert_eq!(router.route("gpt-3.5-turbo").unwrap().provider, Provider::OpenAI);
 
-    #[test]
-    fn test_models_for_provider() {
-        let config = Arc::new(create_test_config());
-        let router = ModelRouter::new(config);
-
-        let openai_models = router.models_for_provider(&Provider::OpenAI);
-        assert_eq!(openai_models.len(), 1);
-        assert!(openai_models.contains(&"gpt-4".to_string()));
-
-        let anthropic_models = router.models_for_provider(&Provider::Anthropic);
-        assert_eq!(anthropic_models.len(), 1);
-        assert!(anthropic_models.contains(&"claude-3-5-sonnet".to_string()));
-
-        let gemini_models = router.models_for_provider(&Provider::Gemini);
-        assert_eq!(gemini_models.len(), 1);
-        assert!(gemini_models.contains(&"gemini-1.5-pro".to_string()));
+        // Test that o1- prefix matches for O1 models
+        assert_eq!(router.route("o1-preview").unwrap().provider, Provider::OpenAI);
     }
 
     #[test]

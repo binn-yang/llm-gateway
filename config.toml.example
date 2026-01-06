@@ -16,33 +16,34 @@ key = "sk-gateway-YOUR-KEY-HERE-002"
 name = "backend-service"
 enabled = true
 
-# Model Mapping Configuration
-# Only include models for enabled providers
-[models."qwen3-0.6b-mlx"]
-provider = "openai"
-api_model = "qwen3-0.6b-mlx"
+# Routing Configuration
+# Model requests are routed to providers based on model name prefix matching
+# The gateway is now a pass-through proxy - model names are sent directly to providers
+[routing]
+# Prefix matching rules (longest prefix is matched first)
+# Examples:
+#   "gpt-4-turbo-2024-04-09" matches "gpt-" → routes to OpenAI
+#   "claude-3-5-sonnet-20241022" matches "claude-" → routes to Anthropic
+#   "gemini-1.5-pro" matches "gemini-" → routes to Gemini
+[routing.rules]
+"gpt-" = "openai"
+"o1-" = "openai"
+"o3-" = "openai"
+"text-embedding-" = "openai"
+"claude-" = "anthropic"
+"gemini-" = "gemini"
+"models/gemini-" = "gemini"  # Gemini uses "models/" prefix in model names
 
-[models.gpt-4-turbo]
-provider = "openai"
-api_model = "gpt-4-turbo-2024-04-09"
+# Default provider when no prefix matches (optional)
+# If not set, requests with unknown prefixes will be rejected
+default_provider = "openai"
 
-# Uncomment these when Anthropic provider is enabled
-# [models."claude-3-5-sonnet"]
-# provider = "anthropic"
-# api_model = "claude-3-5-sonnet-20241022"
-
-# [models."claude-3-opus"]
-# provider = "anthropic"
-# api_model = "claude-3-opus-20240229"
-
-# Uncomment these when Gemini provider is enabled
-# [models."gemini-1.5-pro"]
-# provider = "gemini"
-# api_model = "models/gemini-1.5-pro-latest"
-
-# [models."gemini-2.0-flash"]
-# provider = "gemini"
-# api_model = "models/gemini-2.0-flash-exp"
+# Model discovery and caching configuration
+[routing.discovery]
+enabled = true
+cache_ttl_seconds = 3600      # Cache model lists for 1 hour
+refresh_on_startup = true     # Fetch model lists when gateway starts
+providers_with_listing = ["openai"]  # Only OpenAI has public model list API
 
 # Provider Configurations
 [providers.openai]

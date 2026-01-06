@@ -48,7 +48,6 @@ pub async fn handle_chat_completions(
 
     tracing::debug!(
         provider = %route_info.provider,
-        api_model = %route_info.api_model,
         requires_conversion = route_info.requires_conversion,
         "Routed model to provider"
     );
@@ -61,16 +60,16 @@ pub async fn handle_chat_completions(
         "/v1/chat/completions",
     );
 
-    // Route based on provider
+    // Route based on provider (model name is passed through directly)
     match route_info.provider {
         Provider::OpenAI => {
             handle_openai_request(&state, &auth, request, is_stream, &model, start).await
         }
         Provider::Anthropic => {
-            handle_anthropic_request(&state, &auth, request, is_stream, &model, &route_info.api_model, start).await
+            handle_anthropic_request(&state, &auth, request, is_stream, &model, start).await
         }
         Provider::Gemini => {
-            handle_gemini_request(&state, &auth, request, is_stream, &model, &route_info.api_model, start).await
+            handle_gemini_request(&state, &auth, request, is_stream, &model, start).await
         }
     }
 }
@@ -129,18 +128,16 @@ async fn handle_anthropic_request(
     openai_request: ChatCompletionRequest,
     is_stream: bool,
     model: &str,
-    api_model: &str,
     start: Instant,
 ) -> Result<Response, AppError> {
     // Convert OpenAI request to Anthropic format
     let mut anthropic_request = converters::openai_to_anthropic::convert_request(&openai_request)?;
 
-    // Use the correct API model name
-    anthropic_request.model = api_model.to_string();
+    // Pass through the original model name
+    anthropic_request.model = model.to_string();
 
     tracing::debug!(
-        original_model = %model,
-        api_model = %api_model,
+        model = %model,
         has_system = anthropic_request.system.is_some(),
         "Converted OpenAI request to Anthropic format"
     );
@@ -200,15 +197,13 @@ async fn handle_gemini_request(
     openai_request: ChatCompletionRequest,
     is_stream: bool,
     model: &str,
-    api_model: &str,
     start: Instant,
 ) -> Result<Response, AppError> {
     // Convert OpenAI request to Gemini format
     let gemini_request = converters::openai_to_gemini::convert_request(&openai_request)?;
 
     tracing::debug!(
-        original_model = %model,
-        api_model = %api_model,
+        model = %model,
         has_system = gemini_request.system_instruction.is_some(),
         "Converted OpenAI request to Gemini format"
     );
@@ -216,11 +211,11 @@ async fn handle_gemini_request(
     // Load current configuration
     let config = state.config.load();
 
-    // Call Gemini API
+    // Call Gemini API (pass through original model name)
     let response = providers::gemini::generate_content(
         &state.http_client,
         &config.providers.gemini,
-        api_model,
+        model,
         gemini_request,
         is_stream,
     )
@@ -270,20 +265,16 @@ async fn handle_gemini_request(
 mod tests {
     use super::*;
     use crate::config::{
-        AnthropicConfig, ApiKeyConfig, Config, MetricsConfig, ModelConfig, ProviderConfig,
-        ProvidersConfig, ServerConfig,
+        AnthropicConfig, ApiKeyConfig, Config, DiscoveryConfig, MetricsConfig, ProviderConfig,
+        ProvidersConfig, RoutingConfig, ServerConfig,
     };
     use std::collections::HashMap;
 
     fn create_test_state() -> AppState {
-        let mut models = HashMap::new();
-        models.insert(
-            "gpt-4".to_string(),
-            ModelConfig {
-                provider: "openai".to_string(),
-                api_model: "gpt-4".to_string(),
-            },
-        );
+        let mut routing_rules = HashMap::new();
+        routing_rules.insert("gpt-".to_string(), "openai".to_string());
+        routing_rules.insert("claude-".to_string(), "anthropic".to_string());
+        routing_rules.insert("gemini-".to_string(), "gemini".to_string());
 
         let config = Config {
             server: ServerConfig {
@@ -297,7 +288,16 @@ mod tests {
                 name: "test".to_string(),
                 enabled: true,
             }],
-            models,
+            routing: RoutingConfig {
+                rules: routing_rules,
+                default_provider: Some("openai".to_string()),
+                discovery: DiscoveryConfig {
+                    enabled: true,
+                    cache_ttl_seconds: 3600,
+                    refresh_on_startup: true,
+                    providers_with_listing: vec!["openai".to_string()],
+                },
+            },
             providers: ProvidersConfig {
                 openai: ProviderConfig {
                     enabled: true,
@@ -326,7 +326,7 @@ mod tests {
             },
         };
 
-        let config = Arc::new(config);
+        let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(config)));
         let router = Arc::new(ModelRouter::new(config.clone()));
         let http_client = reqwest::Client::new();
 
@@ -340,6 +340,6 @@ mod tests {
     #[test]
     fn test_app_state_creation() {
         let state = create_test_state();
-        assert!(state.config.providers.openai.enabled);
+        assert!(state.config.load().providers.openai.enabled);
     }
 }

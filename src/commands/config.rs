@@ -36,7 +36,7 @@ pub fn validate() -> Result<()> {
     println!("{}", "✓ Configuration is valid".green());
     println!();
     println!("{}", "Summary:".bold());
-    println!("  Models: {}", cfg.models.len());
+    println!("  Routing Rules: {}", cfg.routing.rules.len());
     println!("  API Keys: {}", cfg.api_keys.len());
     println!(
         "  Enabled Providers: {}",

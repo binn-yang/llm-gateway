@@ -19,7 +19,7 @@ pub use crate::handlers::chat_completions::AppState;
 
 /// 处理 POST /v1/messages 端点（Anthropic 原生 API）
 ///
-/// 严格模式：只允许 provider=anthropic 的模型
+/// 透传模式：路由到任何 provider（主要用于 Anthropic 兼容的 API）
 pub async fn handle_messages(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthInfo>,
@@ -36,40 +36,29 @@ pub async fn handle_messages(
         "Handling native Anthropic messages request"
     );
 
-    // 1. 验证模型并获取路由信息
+    // 1. 路由到 provider
     let route_info = state.router.route(&model)?;
-
-    // 2. 严格验证：只允许 Anthropic provider
-    if route_info.provider != Provider::Anthropic {
-        return Err(AppError::ProviderDisabled(format!(
-            "Model '{}' is not an Anthropic model. The /v1/messages endpoint only supports Anthropic models. Provider: {}",
-            model,
-            route_info.provider
-        )));
-    }
 
     tracing::debug!(
         provider = %route_info.provider,
-        api_model = %route_info.api_model,
-        "Validated Anthropic model"
+        "Routed model to provider"
     );
 
-    // 3. 记录请求指标
+    // 2. 记录请求指标
     metrics::record_request(
         &auth.api_key_name,
-        "anthropic",
+        route_info.provider.as_str(),
         &model,
         "/v1/messages",
     );
 
-    // 4. 使用路由的 api_model 替换请求中的模型名
-    let mut anthropic_request = request;
-    anthropic_request.model = route_info.api_model;
+    // 3. 透传原始模型名
+    let anthropic_request = request;
 
-    // 5. 加载配置
+    // 4. 加载配置
     let config = state.config.load();
 
-    // 6. 调用 Anthropic API（复用现有的 provider 函数）
+    // 5. 调用 Anthropic API（复用现有的 provider 函数）
     let response = providers::anthropic::create_message(
         &state.http_client,
         &config.providers.anthropic,
@@ -77,7 +66,9 @@ pub async fn handle_messages(
     )
     .await?;
 
-    // 7. 根据 stream 参数处理响应
+    let provider_name = route_info.provider.as_str();
+
+    // 6. 根据 stream 参数处理响应
     if is_stream {
         // 流式响应 - 直接转发原生 Anthropic SSE
         tracing::debug!("Streaming native Anthropic SSE response");
@@ -90,19 +81,19 @@ pub async fn handle_messages(
         // 记录指标
         metrics::record_tokens(
             &auth.api_key_name,
-            "anthropic",
+            provider_name,
             &model,
             "input",
             body.usage.input_tokens,
         );
         metrics::record_tokens(
             &auth.api_key_name,
-            "anthropic",
+            provider_name,
             &model,
             "output",
             body.usage.output_tokens,
         );
-        metrics::record_duration(&auth.api_key_name, "anthropic", &model, start.elapsed());
+        metrics::record_duration(&auth.api_key_name, provider_name, &model, start.elapsed());
 
         tracing::info!(
             api_key = %auth.api_key_name,

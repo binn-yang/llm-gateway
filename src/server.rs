@@ -50,8 +50,8 @@ pub async fn start_server(config: Config) -> Result<()> {
 
     info!("Starting LLM Gateway on {}", addr);
     info!(
-        "Configuration: {} models, {} API keys, {} enabled providers",
-        config.models.len(),
+        "Configuration: {} routing rules, {} API keys, {} enabled providers",
+        config.routing.rules.len(),
         config.api_keys.len(),
         count_enabled_providers(&config)
     );
@@ -131,20 +131,16 @@ fn count_enabled_providers(config: &Config) -> usize {
 mod tests {
     use super::*;
     use crate::config::{
-        AnthropicConfig, ApiKeyConfig, MetricsConfig, ModelConfig, ProviderConfig,
-        ProvidersConfig, ServerConfig,
+        AnthropicConfig, ApiKeyConfig, DiscoveryConfig, MetricsConfig, ProviderConfig,
+        ProvidersConfig, RoutingConfig, ServerConfig,
     };
     use std::collections::HashMap;
 
     fn create_test_config() -> Config {
-        let mut models = HashMap::new();
-        models.insert(
-            "gpt-4".to_string(),
-            ModelConfig {
-                provider: "openai".to_string(),
-                api_model: "gpt-4".to_string(),
-            },
-        );
+        let mut routing_rules = HashMap::new();
+        routing_rules.insert("gpt-".to_string(), "openai".to_string());
+        routing_rules.insert("claude-".to_string(), "anthropic".to_string());
+        routing_rules.insert("gemini-".to_string(), "gemini".to_string());
 
         Config {
             server: ServerConfig {
@@ -158,7 +154,16 @@ mod tests {
                 name: "test".to_string(),
                 enabled: true,
             }],
-            models,
+            routing: RoutingConfig {
+                rules: routing_rules,
+                default_provider: Some("openai".to_string()),
+                discovery: DiscoveryConfig {
+                    enabled: true,
+                    cache_ttl_seconds: 3600,
+                    refresh_on_startup: true,
+                    providers_with_listing: vec!["openai".to_string()],
+                },
+            },
             providers: ProvidersConfig {
                 openai: ProviderConfig {
                     enabled: true,

@@ -105,10 +105,10 @@ async fn reload_config(config: Arc<ArcSwap<Config>>) -> Result<()> {
     let new_config = crate::config::load_config()?;
 
     info!(
-        "New configuration loaded. Server: {}:{}, Models: {}, API Keys: {}",
+        "New configuration loaded. Server: {}:{}, Routing Rules: {}, API Keys: {}",
         new_config.server.host,
         new_config.server.port,
-        new_config.models.len(),
+        new_config.routing.rules.len(),
         new_config.api_keys.len()
     );
 
@@ -152,12 +152,15 @@ pub fn send_signal_to_pid(_pid: u32, _signal_kind: ()) -> Result<()> {
 mod tests {
     use super::*;
     use crate::config::{
-        AnthropicConfig, ApiKeyConfig, MetricsConfig, ModelConfig, ProviderConfig,
-        ProvidersConfig, ServerConfig,
+        AnthropicConfig, ApiKeyConfig, DiscoveryConfig, MetricsConfig, ProviderConfig,
+        ProvidersConfig, RoutingConfig, ServerConfig,
     };
     use std::collections::HashMap;
 
     fn create_test_config() -> Config {
+        let mut routing_rules = HashMap::new();
+        routing_rules.insert("gpt-".to_string(), "openai".to_string());
+
         Config {
             server: ServerConfig {
                 host: "127.0.0.1".to_string(),
@@ -170,7 +173,16 @@ mod tests {
                 name: "test".to_string(),
                 enabled: true,
             }],
-            models: HashMap::new(),
+            routing: RoutingConfig {
+                rules: routing_rules,
+                default_provider: Some("openai".to_string()),
+                discovery: DiscoveryConfig {
+                    enabled: true,
+                    cache_ttl_seconds: 3600,
+                    refresh_on_startup: true,
+                    providers_with_listing: vec!["openai".to_string()],
+                },
+            },
             providers: ProvidersConfig {
                 openai: ProviderConfig {
                     enabled: true,

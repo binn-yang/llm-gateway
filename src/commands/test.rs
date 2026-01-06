@@ -40,12 +40,15 @@ pub fn execute() -> Result<()> {
     }
     println!();
 
-    println!("  {}: {}", "Models".cyan(), cfg.models.len());
-    for (model_name, model_cfg) in cfg.models.iter() {
+    println!("  {}: {}", "Routing Rules".cyan(), cfg.routing.rules.len());
+    for (prefix, provider) in cfg.routing.rules.iter() {
         println!(
-            "    {} → {} ({})",
-            model_name, model_cfg.api_model, model_cfg.provider
+            "    {} → {}",
+            prefix, provider
         );
+    }
+    if let Some(default) = &cfg.routing.default_provider {
+        println!("    {} → {}", "(default)".dimmed(), default);
     }
     println!();
 

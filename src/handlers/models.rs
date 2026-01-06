@@ -18,19 +18,12 @@ pub struct ModelObject {
 }
 
 /// Handle /v1/models endpoint
-/// Returns list of all available models from configuration
-pub async fn list_models(State(state): State<AppState>) -> impl IntoResponse {
-    let models: Vec<ModelObject> = state
-        .router
-        .available_models()
-        .into_iter()
-        .map(|model_name| ModelObject {
-            id: model_name,
-            object: "model".to_string(),
-            created: chrono::Utc::now().timestamp() as u64,
-            owned_by: "llm-gateway".to_string(),
-        })
-        .collect();
+/// Returns list of all available models
+/// TODO: Implement dynamic model discovery from providers
+pub async fn list_models(State(_state): State<AppState>) -> impl IntoResponse {
+    // Temporary implementation: return empty list
+    // Full model discovery will be implemented in phase 2
+    let models: Vec<ModelObject> = vec![];
 
     Json(ModelsResponse {
         object: "list".to_string(),
@@ -42,29 +35,17 @@ pub async fn list_models(State(state): State<AppState>) -> impl IntoResponse {
 mod tests {
     use super::*;
     use crate::config::{
-        AnthropicConfig, ApiKeyConfig, Config, MetricsConfig, ModelConfig, ProviderConfig,
-        ProvidersConfig, ServerConfig,
+        AnthropicConfig, ApiKeyConfig, Config, DiscoveryConfig, MetricsConfig, ProviderConfig,
+        ProvidersConfig, RoutingConfig, ServerConfig,
     };
     use crate::router::ModelRouter;
     use std::collections::HashMap;
     use std::sync::Arc;
 
     fn create_test_state() -> AppState {
-        let mut models = HashMap::new();
-        models.insert(
-            "gpt-4".to_string(),
-            ModelConfig {
-                provider: "openai".to_string(),
-                api_model: "gpt-4".to_string(),
-            },
-        );
-        models.insert(
-            "claude-3-5-sonnet".to_string(),
-            ModelConfig {
-                provider: "anthropic".to_string(),
-                api_model: "claude-3-5-sonnet-20241022".to_string(),
-            },
-        );
+        let mut routing_rules = HashMap::new();
+        routing_rules.insert("gpt-".to_string(), "openai".to_string());
+        routing_rules.insert("claude-".to_string(), "anthropic".to_string());
 
         let config = Config {
             server: ServerConfig {
@@ -78,7 +59,16 @@ mod tests {
                 name: "test".to_string(),
                 enabled: true,
             }],
-            models,
+            routing: RoutingConfig {
+                rules: routing_rules,
+                default_provider: Some("openai".to_string()),
+                discovery: DiscoveryConfig {
+                    enabled: true,
+                    cache_ttl_seconds: 3600,
+                    refresh_on_startup: true,
+                    providers_with_listing: vec!["openai".to_string()],
+                },
+            },
             providers: ProvidersConfig {
                 openai: ProviderConfig {
                     enabled: true,
@@ -107,7 +97,7 @@ mod tests {
             },
         };
 
-        let config = Arc::new(config);
+        let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(config)));
         let router = Arc::new(ModelRouter::new(config.clone()));
         let http_client = reqwest::Client::new();
 

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 pub struct Config {
     pub server: ServerConfig,
     pub api_keys: Vec<ApiKeyConfig>,
-    pub models: HashMap<String, ModelConfig>,
+    pub routing: RoutingConfig,
     pub providers: ProvidersConfig,
     pub metrics: MetricsConfig,
 }
@@ -26,9 +26,18 @@ pub struct ApiKeyConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ModelConfig {
-    pub provider: String,
-    pub api_model: String,
+pub struct RoutingConfig {
+    pub rules: HashMap<String, String>,  // prefix -> provider name
+    pub default_provider: Option<String>,
+    pub discovery: DiscoveryConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DiscoveryConfig {
+    pub enabled: bool,
+    pub cache_ttl_seconds: u64,
+    pub refresh_on_startup: bool,
+    pub providers_with_listing: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -95,25 +104,47 @@ fn validate_config(cfg: &Config) -> anyhow::Result<()> {
         }
     }
 
-    // Validate model mappings have valid providers
-    for (model_name, model_config) in &cfg.models {
-        match model_config.provider.as_str() {
+    // Validate routing rules reference enabled providers
+    for (prefix, provider_name) in &cfg.routing.rules {
+        match provider_name.as_str() {
             "openai" => {
                 if !cfg.providers.openai.enabled {
-                    anyhow::bail!("Model '{}' uses OpenAI provider, but OpenAI is disabled", model_name);
+                    anyhow::bail!("Routing rule '{}' uses OpenAI provider, but OpenAI is disabled", prefix);
                 }
             }
             "anthropic" => {
                 if !cfg.providers.anthropic.enabled {
-                    anyhow::bail!("Model '{}' uses Anthropic provider, but Anthropic is disabled", model_name);
+                    anyhow::bail!("Routing rule '{}' uses Anthropic provider, but Anthropic is disabled", prefix);
                 }
             }
             "gemini" => {
                 if !cfg.providers.gemini.enabled {
-                    anyhow::bail!("Model '{}' uses Gemini provider, but Gemini is disabled", model_name);
+                    anyhow::bail!("Routing rule '{}' uses Gemini provider, but Gemini is disabled", prefix);
                 }
             }
-            _ => anyhow::bail!("Model '{}' has invalid provider: {}", model_name, model_config.provider),
+            _ => anyhow::bail!("Routing rule '{}' has invalid provider: {}", prefix, provider_name),
+        }
+    }
+
+    // Validate default provider if set
+    if let Some(default_provider) = &cfg.routing.default_provider {
+        match default_provider.as_str() {
+            "openai" => {
+                if !cfg.providers.openai.enabled {
+                    anyhow::bail!("Default provider 'openai' is disabled");
+                }
+            }
+            "anthropic" => {
+                if !cfg.providers.anthropic.enabled {
+                    anyhow::bail!("Default provider 'anthropic' is disabled");
+                }
+            }
+            "gemini" => {
+                if !cfg.providers.gemini.enabled {
+                    anyhow::bail!("Default provider 'gemini' is disabled");
+                }
+            }
+            _ => anyhow::bail!("Invalid default provider: {}", default_provider),
         }
     }
 
@@ -147,6 +178,9 @@ mod tests {
     }
 
     fn create_test_config() -> Config {
+        let mut routing_rules = HashMap::new();
+        routing_rules.insert("gpt-".to_string(), "openai".to_string());
+
         Config {
             server: ServerConfig {
                 host: "0.0.0.0".to_string(),
@@ -159,7 +193,16 @@ mod tests {
                 name: "test".to_string(),
                 enabled: true,
             }],
-            models: HashMap::new(),
+            routing: RoutingConfig {
+                rules: routing_rules,
+                default_provider: Some("openai".to_string()),
+                discovery: DiscoveryConfig {
+                    enabled: true,
+                    cache_ttl_seconds: 3600,
+                    refresh_on_startup: true,
+                    providers_with_listing: vec!["openai".to_string()],
+                },
+            },
             providers: ProvidersConfig {
                 openai: ProviderConfig {
                     enabled: true,
