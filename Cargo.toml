@@ -51,6 +51,11 @@ futures-util = "0.3"
 # SSE
 eventsource-stream = "0.2"
 
+# Terminal UI & Stats
+ratatui = "0.28"
+crossterm = "0.28"
+prometheus-parse = "0.2"
+
 # 其他
 chrono = "0.4"
 uuid = { version = "1.11", features = ["v4"] }

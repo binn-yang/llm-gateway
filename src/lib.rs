@@ -9,6 +9,7 @@ pub mod providers;
 pub mod router;
 pub mod server;
 pub mod signals;
+pub mod stats;
 pub mod streaming;
 
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};

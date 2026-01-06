@@ -56,6 +56,21 @@ pub enum Commands {
         action: ConfigCommands,
     },
 
+    /// Display real-time stats dashboard
+    Stats {
+        /// Refresh interval in seconds
+        #[arg(short, long, default_value = "1.0")]
+        interval: f64,
+
+        /// Metrics endpoint URL (auto-detected from config if not provided)
+        #[arg(short, long)]
+        url: Option<String>,
+
+        /// Group by: api-key, provider, model, all
+        #[arg(short, long, default_value = "provider")]
+        group_by: String,
+    },
+
     /// Show version information
     Version,
 }

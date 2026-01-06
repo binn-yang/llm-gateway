@@ -6,9 +6,11 @@
 //! - reload: Reload configuration
 //! - test: Test configuration validity
 //! - config: Configuration display and validation
+//! - stats: Display real-time stats dashboard
 
 pub mod config;
 pub mod reload;
 pub mod start;
+pub mod stats;
 pub mod stop;
 pub mod test;

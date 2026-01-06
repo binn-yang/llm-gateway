@@ -50,6 +50,13 @@ async fn main() -> Result<()> {
             cli::ConfigCommands::Show => commands::config::show()?,
             cli::ConfigCommands::Validate => commands::config::validate()?,
         },
+        cli::Commands::Stats {
+            interval,
+            url,
+            group_by,
+        } => {
+            commands::stats::execute(interval, url, group_by).await?;
+        }
         cli::Commands::Version => {
             println!("LLM Gateway v{}", env!("CARGO_PKG_VERSION"));
             println!("Rust {}", env!("CARGO_PKG_RUST_VERSION"));
