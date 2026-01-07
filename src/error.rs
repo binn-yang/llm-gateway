@@ -25,6 +25,10 @@ pub enum AppError {
     UpstreamError { status: StatusCode, message: String },
     /// Internal server error
     InternalError(String),
+    /// No healthy provider instances available
+    NoHealthyInstances(String),
+    /// HTTP request error (preserves reqwest::Error for health detection)
+    HttpRequest(reqwest::Error),
 }
 
 impl fmt::Display for AppError {
@@ -40,6 +44,8 @@ impl fmt::Display for AppError {
                 write!(f, "Upstream error ({}): {}", status, message)
             }
             Self::InternalError(msg) => write!(f, "Internal error: {}", msg),
+            Self::NoHealthyInstances(msg) => write!(f, "No healthy instances: {}", msg),
+            Self::HttpRequest(err) => write!(f, "HTTP request error: {}", err),
         }
     }
 }
@@ -57,6 +63,8 @@ impl IntoResponse for AppError {
             Self::HttpClientError(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
             Self::UpstreamError { status, message } => (*status, message.clone()),
             Self::InternalError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            Self::NoHealthyInstances(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
+            Self::HttpRequest(err) => (StatusCode::BAD_GATEWAY, err.to_string()),
         };
 
         let body = Json(json!({
@@ -80,6 +88,8 @@ fn error_type_name(error: &AppError) -> &'static str {
         AppError::HttpClientError(_) => "http_client_error",
         AppError::UpstreamError { .. } => "upstream_error",
         AppError::InternalError(_) => "internal_error",
+        AppError::NoHealthyInstances(_) => "no_healthy_instances",
+        AppError::HttpRequest(_) => "http_request_error",
     }
 }
 

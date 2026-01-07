@@ -2,6 +2,7 @@ use crate::{
     auth::AuthInfo,
     converters,
     error::AppError,
+    load_balancer::LoadBalancer,
     metrics,
     models::openai::{ChatCompletionRequest, ChatCompletionResponse},
     providers,
@@ -13,6 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
     Extension, Json,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -22,6 +24,7 @@ pub struct AppState {
     pub config: Arc<arc_swap::ArcSwap<crate::config::Config>>,
     pub router: Arc<ModelRouter>,
     pub http_client: reqwest::Client,
+    pub load_balancers: Arc<HashMap<Provider, Arc<LoadBalancer>>>,
 }
 
 /// Handle /v1/chat/completions endpoint
@@ -82,14 +85,32 @@ async fn handle_openai_request(
     model: &str,
     start: Instant,
 ) -> Result<Response, AppError> {
-    // Load current configuration
-    let config = state.config.load();
+    // Get LoadBalancer for OpenAI provider
+    let load_balancer = state
+        .load_balancers
+        .get(&crate::router::Provider::OpenAI)
+        .ok_or_else(|| AppError::ProviderDisabled("OpenAI provider not configured".to_string()))?;
 
-    // Call OpenAI API
-    let response = providers::openai::chat_completions(
-        &state.http_client,
-        &config.providers.openai,
-        request,
+    // Execute request with sticky session
+    let request_clone = request.clone();
+    let http_client = state.http_client.clone();
+    let response = crate::retry::execute_with_session(
+        load_balancer.as_ref(),
+        &auth.api_key_name,
+        |instance| {
+            let http_client = http_client.clone();
+            let request_clone = request_clone.clone();
+            async move {
+                // Extract config from the instance
+                let config = match &instance.config {
+                    crate::load_balancer::ProviderInstanceConfigEnum::Generic(cfg) => cfg.as_ref(),
+                    _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
+                };
+
+                // Call OpenAI API
+                providers::openai::chat_completions(&http_client, config, request_clone).await
+            }
+        },
     )
     .await?;
 
@@ -142,14 +163,31 @@ async fn handle_anthropic_request(
         "Converted OpenAI request to Anthropic format"
     );
 
-    // Load current configuration
-    let config = state.config.load();
+    // Get LoadBalancer for Anthropic provider
+    let load_balancer = state
+        .load_balancers
+        .get(&crate::router::Provider::Anthropic)
+        .ok_or_else(|| AppError::ProviderDisabled("Anthropic provider not configured".to_string()))?;
 
-    // Call Anthropic API
-    let response = providers::anthropic::create_message(
-        &state.http_client,
-        &config.providers.anthropic,
-        anthropic_request,
+    // Execute request with sticky session
+    let http_client = state.http_client.clone();
+    let response = crate::retry::execute_with_session(
+        load_balancer.as_ref(),
+        &auth.api_key_name,
+        |instance| {
+            let http_client = http_client.clone();
+            let anthropic_request = anthropic_request.clone();
+            async move {
+                // Extract config from the instance
+                let config = match &instance.config {
+                    crate::load_balancer::ProviderInstanceConfigEnum::Anthropic(cfg) => cfg.as_ref(),
+                    _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
+                };
+
+                // Call Anthropic API
+                providers::anthropic::create_message(&http_client, config, anthropic_request).await
+            }
+        },
     )
     .await?;
 
@@ -208,16 +246,40 @@ async fn handle_gemini_request(
         "Converted OpenAI request to Gemini format"
     );
 
-    // Load current configuration
-    let config = state.config.load();
+    // Get LoadBalancer for Gemini provider
+    let load_balancer = state
+        .load_balancers
+        .get(&crate::router::Provider::Gemini)
+        .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?;
 
-    // Call Gemini API (pass through original model name)
-    let response = providers::gemini::generate_content(
-        &state.http_client,
-        &config.providers.gemini,
-        model,
-        gemini_request,
-        is_stream,
+    // Execute request with sticky session
+    let http_client = state.http_client.clone();
+    let model_str = model.to_string();
+    let response = crate::retry::execute_with_session(
+        load_balancer.as_ref(),
+        &auth.api_key_name,
+        |instance| {
+            let http_client = http_client.clone();
+            let model_str = model_str.clone();
+            let gemini_request = gemini_request.clone();
+            async move {
+                // Extract config from the instance
+                let config = match &instance.config {
+                    crate::load_balancer::ProviderInstanceConfigEnum::Generic(cfg) => cfg.as_ref(),
+                    _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
+                };
+
+                // Call Gemini API (pass through original model name)
+                providers::gemini::generate_content(
+                    &http_client,
+                    config,
+                    &model_str,
+                    gemini_request,
+                    is_stream,
+                )
+                .await
+            }
+        },
     )
     .await?;
 
@@ -265,7 +327,7 @@ async fn handle_gemini_request(
 mod tests {
     use super::*;
     use crate::config::{
-        AnthropicConfig, ApiKeyConfig, Config, DiscoveryConfig, MetricsConfig, ProviderConfig,
+        AnthropicInstanceConfig, ApiKeyConfig, Config, DiscoveryConfig, MetricsConfig, ProviderInstanceConfig,
         ProvidersConfig, RoutingConfig, ServerConfig,
     };
     use std::collections::HashMap;
@@ -299,25 +361,34 @@ mod tests {
                 },
             },
             providers: ProvidersConfig {
-                openai: ProviderConfig {
+                openai: vec![ProviderInstanceConfig {
+                    name: "openai-test".to_string(),
                     enabled: true,
                     api_key: "sk-test".to_string(),
                     base_url: "https://api.openai.com/v1".to_string(),
                     timeout_seconds: 300,
-                },
-                anthropic: AnthropicConfig {
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
+                anthropic: vec![AnthropicInstanceConfig {
+                    name: "anthropic-test".to_string(),
                     enabled: false,
                     api_key: "test".to_string(),
                     base_url: "https://api.anthropic.com/v1".to_string(),
                     timeout_seconds: 300,
                     api_version: "2023-06-01".to_string(),
-                },
-                gemini: ProviderConfig {
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
+                gemini: vec![ProviderInstanceConfig {
+                    name: "gemini-test".to_string(),
                     enabled: false,
                     api_key: "test".to_string(),
                     base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
                     timeout_seconds: 300,
-                },
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
             },
             metrics: MetricsConfig {
                 enabled: true,
@@ -329,17 +400,20 @@ mod tests {
         let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(config)));
         let router = Arc::new(ModelRouter::new(config.clone()));
         let http_client = reqwest::Client::new();
+        let load_balancers = Arc::new(HashMap::new());
 
         AppState {
             config,
             router,
             http_client,
+            load_balancers,
         }
     }
 
     #[test]
     fn test_app_state_creation() {
         let state = create_test_state();
-        assert!(state.config.load().providers.openai.enabled);
+        assert!(!state.config.load().providers.openai.is_empty());
+        assert!(state.config.load().providers.openai[0].enabled);
     }
 }

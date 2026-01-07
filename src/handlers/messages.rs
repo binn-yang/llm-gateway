@@ -4,7 +4,6 @@ use crate::{
     metrics,
     models::anthropic::{MessagesRequest, MessagesResponse},
     providers,
-    router::Provider,
     streaming,
 };
 use axum::{
@@ -55,14 +54,31 @@ pub async fn handle_messages(
     // 3. 透传原始模型名
     let anthropic_request = request;
 
-    // 4. 加载配置
-    let config = state.config.load();
+    // 4. Get LoadBalancer for Anthropic provider
+    let load_balancer = state
+        .load_balancers
+        .get(&crate::router::Provider::Anthropic)
+        .ok_or_else(|| AppError::ProviderDisabled("Anthropic provider not configured".to_string()))?;
 
-    // 5. 调用 Anthropic API（复用现有的 provider 函数）
-    let response = providers::anthropic::create_message(
-        &state.http_client,
-        &config.providers.anthropic,
-        anthropic_request,
+    // 5. Execute request with sticky session
+    let http_client = state.http_client.clone();
+    let response = crate::retry::execute_with_session(
+        load_balancer.as_ref(),
+        &auth.api_key_name,
+        |instance| {
+            let http_client = http_client.clone();
+            let anthropic_request = anthropic_request.clone();
+            async move {
+                // Extract config from the instance
+                let config = match &instance.config {
+                    crate::load_balancer::ProviderInstanceConfigEnum::Anthropic(cfg) => cfg.as_ref(),
+                    _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
+                };
+
+                // Call Anthropic API
+                providers::anthropic::create_message(&http_client, config, anthropic_request).await
+            }
+        },
     )
     .await?;
 
@@ -101,6 +117,8 @@ pub async fn handle_messages(
             duration_ms = start.elapsed().as_millis(),
             input_tokens = body.usage.input_tokens,
             output_tokens = body.usage.output_tokens,
+            stop_reason = ?body.stop_reason,
+            content_blocks = body.content.len(),
             "Completed native Anthropic messages request"
         );
 

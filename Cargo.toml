@@ -1,6 +1,6 @@
 [package]
 name = "llm-gateway"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
@@ -47,6 +47,10 @@ anyhow = "1.0"
 # 异步流处理
 futures = "0.3"
 futures-util = "0.3"
+
+# 并发数据结构和随机
+dashmap = "6.0"
+rand = "0.8"
 
 # SSE
 eventsource-stream = "0.2"

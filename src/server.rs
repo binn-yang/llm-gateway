@@ -1,12 +1,18 @@
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use axum::{extract::DefaultBodyLimit, middleware, routing::{get, post}, Router};
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use crate::{
-    auth, config::Config, handlers, metrics, router::ModelRouter, signals::setup_signal_handlers,
+    auth,
+    config::Config,
+    handlers,
+    load_balancer::{LoadBalancer, ProviderInstance, ProviderInstanceConfigEnum},
+    metrics,
+    router::{ModelRouter, Provider},
+    signals::setup_signal_handlers,
 };
 
 /// Start the LLM Gateway server
@@ -33,10 +39,14 @@ pub async fn start_server(config: Config) -> Result<()> {
     let router = Arc::new(ModelRouter::new(config_swap.clone()));
     let http_client = reqwest::Client::new();
 
+    // Build load balancers for each provider type
+    let load_balancers = build_load_balancers(&config);
+
     let app_state = handlers::chat_completions::AppState {
         config: config_swap.clone(),
         router,
         http_client,
+        load_balancers,
     };
 
     // Build the Axum router
@@ -112,16 +122,128 @@ fn create_router(
         .layer(TraceLayer::new_for_http())
 }
 
+/// Build load balancers for each provider type
+fn build_load_balancers(config: &Config) -> Arc<HashMap<Provider, Arc<LoadBalancer>>> {
+    let mut load_balancers = HashMap::new();
+
+    // OpenAI load balancer
+    if !config.providers.openai.is_empty() {
+        let instances: Vec<ProviderInstance> = config
+            .providers
+            .openai
+            .iter()
+            .filter(|i| i.enabled)
+            .map(|cfg| ProviderInstance {
+                name: Arc::from(cfg.name.as_str()),
+                config: ProviderInstanceConfigEnum::Generic(Arc::new(cfg.clone())),
+            })
+            .collect();
+
+        if !instances.is_empty() {
+            let lb = Arc::new(LoadBalancer::new("openai".to_string(), instances));
+
+            // Spawn background tasks for this load balancer
+            tokio::spawn({
+                let lb = lb.clone();
+                async move {
+                    lb.health_recovery_loop().await;
+                }
+            });
+
+            tokio::spawn({
+                let lb = lb.clone();
+                async move {
+                    lb.session_cleanup_loop().await;
+                }
+            });
+
+            load_balancers.insert(Provider::OpenAI, lb);
+        }
+    }
+
+    // Anthropic load balancer
+    if !config.providers.anthropic.is_empty() {
+        let instances: Vec<ProviderInstance> = config
+            .providers
+            .anthropic
+            .iter()
+            .filter(|i| i.enabled)
+            .map(|cfg| ProviderInstance {
+                name: Arc::from(cfg.name.as_str()),
+                config: ProviderInstanceConfigEnum::Anthropic(Arc::new(cfg.clone())),
+            })
+            .collect();
+
+        if !instances.is_empty() {
+            let lb = Arc::new(LoadBalancer::new("anthropic".to_string(), instances));
+
+            // Spawn background tasks
+            tokio::spawn({
+                let lb = lb.clone();
+                async move {
+                    lb.health_recovery_loop().await;
+                }
+            });
+
+            tokio::spawn({
+                let lb = lb.clone();
+                async move {
+                    lb.session_cleanup_loop().await;
+                }
+            });
+
+            load_balancers.insert(Provider::Anthropic, lb);
+        }
+    }
+
+    // Gemini load balancer
+    if !config.providers.gemini.is_empty() {
+        let instances: Vec<ProviderInstance> = config
+            .providers
+            .gemini
+            .iter()
+            .filter(|i| i.enabled)
+            .map(|cfg| ProviderInstance {
+                name: Arc::from(cfg.name.as_str()),
+                config: ProviderInstanceConfigEnum::Generic(Arc::new(cfg.clone())),
+            })
+            .collect();
+
+        if !instances.is_empty() {
+            let lb = Arc::new(LoadBalancer::new("gemini".to_string(), instances));
+
+            // Spawn background tasks
+            tokio::spawn({
+                let lb = lb.clone();
+                async move {
+                    lb.health_recovery_loop().await;
+                }
+            });
+
+            tokio::spawn({
+                let lb = lb.clone();
+                async move {
+                    lb.session_cleanup_loop().await;
+                }
+            });
+
+            load_balancers.insert(Provider::Gemini, lb);
+        }
+    }
+
+    Arc::new(load_balancers)
+}
+
 /// Count the number of enabled providers
 fn count_enabled_providers(config: &Config) -> usize {
     let mut count = 0;
-    if config.providers.openai.enabled {
+    if config.providers.openai.iter().any(|p| p.enabled) {
         count += 1;
     }
-    if config.providers.anthropic.enabled {
+    if config.providers.anthropic.iter().any(|p| p.enabled) {
         count += 1;
     }
-    if config.providers.gemini.enabled {
+    if config.providers.gemini.iter().any(|p| p.enabled) {
         count += 1;
     }
     count
@@ -131,8 +253,8 @@ fn count_enabled_providers(config: &Config) -> usize {
 mod tests {
     use super::*;
     use crate::config::{
-        AnthropicConfig, ApiKeyConfig, DiscoveryConfig, MetricsConfig, ProviderConfig,
-        ProvidersConfig, RoutingConfig, ServerConfig,
+        AnthropicInstanceConfig, ApiKeyConfig, DiscoveryConfig, MetricsConfig,
+        ProviderInstanceConfig, ProvidersConfig, RoutingConfig, ServerConfig,
     };
     use std::collections::HashMap;
 
@@ -165,25 +287,34 @@ mod tests {
                 },
             },
             providers: ProvidersConfig {
-                openai: ProviderConfig {
+                openai: vec![ProviderInstanceConfig {
+                    name: "openai-primary".to_string(),
                     enabled: true,
                     api_key: "sk-test".to_string(),
                     base_url: "https://api.openai.com/v1".to_string(),
                     timeout_seconds: 300,
-                },
-                anthropic: AnthropicConfig {
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
+                anthropic: vec![AnthropicInstanceConfig {
+                    name: "anthropic-primary".to_string(),
                     enabled: false,
                     api_key: "test".to_string(),
                     base_url: "https://api.anthropic.com/v1".to_string(),
                     timeout_seconds: 300,
                     api_version: "2023-06-01".to_string(),
-                },
-                gemini: ProviderConfig {
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
+                gemini: vec![ProviderInstanceConfig {
+                    name: "gemini-primary".to_string(),
                     enabled: false,
                     api_key: "test".to_string(),
                     base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
                     timeout_seconds: 300,
-                },
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
             },
             metrics: MetricsConfig {
                 enabled: true,
@@ -199,32 +330,34 @@ mod tests {
         assert_eq!(count_enabled_providers(&config), 1); // Only OpenAI enabled
 
         let mut config2 = config.clone();
-        config2.providers.anthropic.enabled = true;
+        config2.providers.anthropic[0].enabled = true;
         assert_eq!(count_enabled_providers(&config2), 2);
 
         let mut config3 = config2.clone();
-        config3.providers.gemini.enabled = true;
+        config3.providers.gemini[0].enabled = true;
         assert_eq!(count_enabled_providers(&config3), 3);
     }
 
     #[tokio::test]
     async fn test_create_router() {
         let config = create_test_config();
-        let config_arc = Arc::new(config.clone());
-        let router = Arc::new(ModelRouter::new(config_arc.clone()));
+        let config_swap = Arc::new(ArcSwap::from_pointee(config.clone()));
+        let router = Arc::new(ModelRouter::new(config_swap.clone()));
         let http_client = reqwest::Client::new();
+        let load_balancers = build_load_balancers(&config);
 
         let app_state = handlers::chat_completions::AppState {
-            config: config_arc.clone(),
+            config: config_swap.clone(),
             router,
             http_client,
+            load_balancers,
         };
 
         let recorder =
             metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
         let metrics_handle = Arc::new(recorder.handle());
 
-        let _app = create_router(config_arc, app_state, metrics_handle);
+        let _app = create_router(config_swap, app_state, metrics_handle);
         // Router created successfully - no panic
     }
 }

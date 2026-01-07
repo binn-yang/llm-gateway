@@ -53,30 +53,39 @@ pub fn execute() -> Result<()> {
     println!();
 
     println!("{}", "Providers:".cyan());
-    println!(
-        "    OpenAI: {}",
-        if cfg.providers.openai.enabled {
-            "enabled".green()
-        } else {
-            "disabled".red()
+
+    // OpenAI instances
+    let enabled_openai = cfg.providers.openai.iter().filter(|p| p.enabled).count();
+    if enabled_openai > 0 {
+        println!("    OpenAI: {} ({} instances)", "enabled".green(), enabled_openai);
+        for inst in cfg.providers.openai.iter().filter(|p| p.enabled) {
+            println!("      - {} (priority: {})", inst.name, inst.priority);
         }
-    );
-    println!(
-        "    Anthropic: {}",
-        if cfg.providers.anthropic.enabled {
-            "enabled".green()
-        } else {
-            "disabled".red()
+    } else {
+        println!("    OpenAI: {}", "disabled".red());
+    }
+
+    // Anthropic instances
+    let enabled_anthropic = cfg.providers.anthropic.iter().filter(|p| p.enabled).count();
+    if enabled_anthropic > 0 {
+        println!("    Anthropic: {} ({} instances)", "enabled".green(), enabled_anthropic);
+        for inst in cfg.providers.anthropic.iter().filter(|p| p.enabled) {
+            println!("      - {} (priority: {})", inst.name, inst.priority);
         }
-    );
-    println!(
-        "    Gemini: {}",
-        if cfg.providers.gemini.enabled {
-            "enabled".green()
-        } else {
-            "disabled".red()
+    } else {
+        println!("    Anthropic: {}", "disabled".red());
+    }
+
+    // Gemini instances
+    let enabled_gemini = cfg.providers.gemini.iter().filter(|p| p.enabled).count();
+    if enabled_gemini > 0 {
+        println!("    Gemini: {} ({} instances)", "enabled".green(), enabled_gemini);
+        for inst in cfg.providers.gemini.iter().filter(|p| p.enabled) {
+            println!("      - {} (priority: {})", inst.name, inst.priority);
         }
-    );
+    } else {
+        println!("    Gemini: {}", "disabled".red());
+    }
     println!();
 
     println!("  {}: {}", "Metrics".cyan(), if cfg.metrics.enabled {

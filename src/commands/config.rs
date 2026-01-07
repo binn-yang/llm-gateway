@@ -53,10 +53,16 @@ pub fn validate() -> Result<()> {
 fn sanitize_secrets(cfg: &Config) -> Config {
     let mut sanitized = cfg.clone();
 
-    // Mask provider API keys
-    sanitized.providers.openai.api_key = mask_api_key(&cfg.providers.openai.api_key);
-    sanitized.providers.anthropic.api_key = mask_api_key(&cfg.providers.anthropic.api_key);
-    sanitized.providers.gemini.api_key = mask_api_key(&cfg.providers.gemini.api_key);
+    // Mask provider instance API keys
+    for instance in &mut sanitized.providers.openai {
+        instance.api_key = mask_api_key(&instance.api_key);
+    }
+    for instance in &mut sanitized.providers.anthropic {
+        instance.api_key = mask_api_key(&instance.api_key);
+    }
+    for instance in &mut sanitized.providers.gemini {
+        instance.api_key = mask_api_key(&instance.api_key);
+    }
 
     // Mask gateway API keys
     for key in &mut sanitized.api_keys {
@@ -85,13 +91,13 @@ fn mask_api_key(key: &str) -> String {
 /// Count enabled providers
 fn count_enabled_providers(cfg: &Config) -> usize {
     let mut count = 0;
-    if cfg.providers.openai.enabled {
+    if cfg.providers.openai.iter().any(|p| p.enabled) {
         count += 1;
     }
-    if cfg.providers.anthropic.enabled {
+    if cfg.providers.anthropic.iter().any(|p| p.enabled) {
         count += 1;
     }
-    if cfg.providers.gemini.enabled {
+    if cfg.providers.gemini.iter().any(|p| p.enabled) {
         count += 1;
     }
     count

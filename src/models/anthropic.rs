@@ -27,6 +27,35 @@ pub struct MessagesRequest {
     /// Stop sequences
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<Vec<String>>,
+    /// Tools available for the model to use
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Tool>>,
+    /// Tool choice configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
+}
+
+/// Tool definition for function calling
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tool {
+    /// Tool name
+    pub name: String,
+    /// Tool description
+    pub description: String,
+    /// JSON schema for tool input
+    pub input_schema: serde_json::Value,
+}
+
+/// Tool choice configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ToolChoice {
+    /// Auto mode: model decides when to use tools
+    Auto { r#type: String },
+    /// Any mode: model must use a tool
+    Any { r#type: String },
+    /// Specific tool: model must use this specific tool
+    Tool { r#type: String, name: String },
 }
 
 /// Message content - supports both string and content blocks format
@@ -75,11 +104,30 @@ pub struct MessagesResponse {
 /// Content block
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentBlock {
-    /// Block type (e.g., "text")
+    /// Block type (e.g., "text", "tool_use", "tool_result")
     #[serde(rename = "type")]
     pub block_type: String,
-    /// Text content
-    pub text: String,
+    /// Text content (for text blocks)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Tool use ID (for tool_use blocks)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Tool name (for tool_use blocks)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Tool input (for tool_use blocks)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Value>,
+    /// Tool use ID reference (for tool_result blocks)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
+    /// Tool result content (for tool_result blocks) - can be string or array of content blocks
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<serde_json::Value>,
+    /// Is error flag (for tool_result blocks)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
 }
 
 /// Token usage information
@@ -158,6 +206,8 @@ mod tests {
             temperature: Some(0.7),
             top_p: None,
             top_k: None,
+            tools: None,
+            tool_choice: None,
             stream: Some(false),
             stop_sequences: None,
         };

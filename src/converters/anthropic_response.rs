@@ -15,7 +15,7 @@ pub fn convert_response(anthropic_resp: &MessagesResponse) -> Result<ChatComplet
     let content = anthropic_resp
         .content
         .first()
-        .map(|block| block.text.clone())
+        .and_then(|block| block.text.clone())
         .unwrap_or_default();
 
     Ok(ChatCompletionResponse {

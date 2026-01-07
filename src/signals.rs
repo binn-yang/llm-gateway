@@ -152,7 +152,7 @@ pub fn send_signal_to_pid(_pid: u32, _signal_kind: ()) -> Result<()> {
 mod tests {
     use super::*;
     use crate::config::{
-        AnthropicConfig, ApiKeyConfig, DiscoveryConfig, MetricsConfig, ProviderConfig,
+        AnthropicInstanceConfig, ApiKeyConfig, DiscoveryConfig, MetricsConfig, ProviderInstanceConfig,
         ProvidersConfig, RoutingConfig, ServerConfig,
     };
     use std::collections::HashMap;
@@ -184,25 +184,34 @@ mod tests {
                 },
             },
             providers: ProvidersConfig {
-                openai: ProviderConfig {
+                openai: vec![ProviderInstanceConfig {
+                    name: "openai-test".to_string(),
                     enabled: true,
                     api_key: "sk-test".to_string(),
                     base_url: "https://api.openai.com/v1".to_string(),
                     timeout_seconds: 300,
-                },
-                anthropic: AnthropicConfig {
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
+                anthropic: vec![AnthropicInstanceConfig {
+                    name: "anthropic-test".to_string(),
                     enabled: false,
                     api_key: "sk-ant-test".to_string(),
                     base_url: "https://api.anthropic.com/v1".to_string(),
                     timeout_seconds: 300,
                     api_version: "2023-06-01".to_string(),
-                },
-                gemini: ProviderConfig {
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
+                gemini: vec![ProviderInstanceConfig {
+                    name: "gemini-test".to_string(),
                     enabled: false,
                     api_key: "test".to_string(),
                     base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
                     timeout_seconds: 300,
-                },
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
             },
             metrics: MetricsConfig {
                 enabled: true,

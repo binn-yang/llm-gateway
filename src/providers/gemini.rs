@@ -1,5 +1,5 @@
 use crate::{
-    config::ProviderConfig,
+    config::ProviderInstanceConfig,
     error::AppError,
     models::gemini::GenerateContentRequest,
 };
@@ -10,7 +10,7 @@ use std::time::Duration;
 /// Note: Model name is part of the URL path
 pub async fn generate_content(
     client: &Client,
-    config: &ProviderConfig,
+    config: &ProviderInstanceConfig,
     model: &str,
     request: GenerateContentRequest,
     stream: bool,
@@ -52,12 +52,15 @@ mod tests {
     use super::*;
     use crate::models::gemini::{Content, Part};
 
-    fn create_test_config() -> ProviderConfig {
-        ProviderConfig {
+    fn create_test_config() -> ProviderInstanceConfig {
+        ProviderInstanceConfig {
+            name: "test-instance".to_string(),
             enabled: true,
             api_key: "test-key".to_string(),
             base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
             timeout_seconds: 30,
+            priority: 1,
+            failure_timeout_seconds: 60,
         }
     }
 

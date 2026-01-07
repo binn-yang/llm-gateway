@@ -42,26 +42,51 @@ pub struct DiscoveryConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProvidersConfig {
-    pub openai: ProviderConfig,
-    pub anthropic: AnthropicConfig,
-    pub gemini: ProviderConfig,
+    #[serde(default)]
+    pub openai: Vec<ProviderInstanceConfig>,
+    #[serde(default)]
+    pub anthropic: Vec<AnthropicInstanceConfig>,
+    #[serde(default)]
+    pub gemini: Vec<ProviderInstanceConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct ProviderConfig {
+pub struct ProviderInstanceConfig {
+    pub name: String,
     pub enabled: bool,
     pub api_key: String,
     pub base_url: String,
     pub timeout_seconds: u64,
+
+    #[serde(default = "default_priority")]
+    pub priority: u32,
+
+    #[serde(default = "default_failure_timeout")]
+    pub failure_timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct AnthropicConfig {
+pub struct AnthropicInstanceConfig {
+    pub name: String,
     pub enabled: bool,
     pub api_key: String,
     pub base_url: String,
     pub timeout_seconds: u64,
     pub api_version: String,
+
+    #[serde(default = "default_priority")]
+    pub priority: u32,
+
+    #[serde(default = "default_failure_timeout")]
+    pub failure_timeout_seconds: u64,
+}
+
+fn default_priority() -> u32 {
+    1
+}
+
+fn default_failure_timeout() -> u64 {
+    60
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -84,12 +109,29 @@ pub fn load_config() -> anyhow::Result<Config> {
 }
 
 fn validate_config(cfg: &Config) -> anyhow::Result<()> {
-    // Validate at least one provider is enabled
-    if !cfg.providers.openai.enabled
-        && !cfg.providers.anthropic.enabled
-        && !cfg.providers.gemini.enabled
-    {
-        anyhow::bail!("At least one provider must be enabled");
+    // Validate at least one enabled provider instance exists
+    let has_enabled_openai = cfg.providers.openai.iter().any(|p| p.enabled);
+    let has_enabled_anthropic = cfg.providers.anthropic.iter().any(|p| p.enabled);
+    let has_enabled_gemini = cfg.providers.gemini.iter().any(|p| p.enabled);
+
+    if !has_enabled_openai && !has_enabled_anthropic && !has_enabled_gemini {
+        anyhow::bail!("At least one provider instance must be enabled");
+    }
+
+    // Validate instance names are unique within each provider type
+    validate_unique_instance_names(&cfg.providers.openai, "OpenAI")?;
+    validate_unique_instance_names(&cfg.providers.anthropic, "Anthropic")?;
+    validate_unique_instance_names(&cfg.providers.gemini, "Gemini")?;
+
+    // Validate instance-specific constraints
+    for instance in &cfg.providers.openai {
+        validate_instance(instance, "OpenAI")?;
+    }
+    for instance in &cfg.providers.anthropic {
+        validate_anthropic_instance(instance)?;
+    }
+    for instance in &cfg.providers.gemini {
+        validate_instance(instance, "Gemini")?;
     }
 
     // Validate at least one API key is configured
@@ -108,18 +150,18 @@ fn validate_config(cfg: &Config) -> anyhow::Result<()> {
     for (prefix, provider_name) in &cfg.routing.rules {
         match provider_name.as_str() {
             "openai" => {
-                if !cfg.providers.openai.enabled {
-                    anyhow::bail!("Routing rule '{}' uses OpenAI provider, but OpenAI is disabled", prefix);
+                if !has_enabled_openai {
+                    anyhow::bail!("Routing rule '{}' uses OpenAI provider, but no OpenAI instances are enabled", prefix);
                 }
             }
             "anthropic" => {
-                if !cfg.providers.anthropic.enabled {
-                    anyhow::bail!("Routing rule '{}' uses Anthropic provider, but Anthropic is disabled", prefix);
+                if !has_enabled_anthropic {
+                    anyhow::bail!("Routing rule '{}' uses Anthropic provider, but no Anthropic instances are enabled", prefix);
                 }
             }
             "gemini" => {
-                if !cfg.providers.gemini.enabled {
-                    anyhow::bail!("Routing rule '{}' uses Gemini provider, but Gemini is disabled", prefix);
+                if !has_enabled_gemini {
+                    anyhow::bail!("Routing rule '{}' uses Gemini provider, but no Gemini instances are enabled", prefix);
                 }
             }
             _ => anyhow::bail!("Routing rule '{}' has invalid provider: {}", prefix, provider_name),
@@ -130,18 +172,18 @@ fn validate_config(cfg: &Config) -> anyhow::Result<()> {
     if let Some(default_provider) = &cfg.routing.default_provider {
         match default_provider.as_str() {
             "openai" => {
-                if !cfg.providers.openai.enabled {
-                    anyhow::bail!("Default provider 'openai' is disabled");
+                if !has_enabled_openai {
+                    anyhow::bail!("Default provider 'openai' has no enabled instances");
                 }
             }
             "anthropic" => {
-                if !cfg.providers.anthropic.enabled {
-                    anyhow::bail!("Default provider 'anthropic' is disabled");
+                if !has_enabled_anthropic {
+                    anyhow::bail!("Default provider 'anthropic' has no enabled instances");
                 }
             }
             "gemini" => {
-                if !cfg.providers.gemini.enabled {
-                    anyhow::bail!("Default provider 'gemini' is disabled");
+                if !has_enabled_gemini {
+                    anyhow::bail!("Default provider 'gemini' has no enabled instances");
                 }
             }
             _ => anyhow::bail!("Invalid default provider: {}", default_provider),
@@ -151,6 +193,56 @@ fn validate_config(cfg: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_unique_instance_names<T>(instances: &[T], provider_name: &str) -> anyhow::Result<()>
+where
+    T: InstanceName,
+{
+    let mut names = std::collections::HashSet::new();
+    for instance in instances {
+        let name = instance.get_name();
+        if name.is_empty() {
+            anyhow::bail!("{} instance name cannot be empty", provider_name);
+        }
+        if !names.insert(name) {
+            anyhow::bail!("{} instance name '{}' is duplicated", provider_name, name);
+        }
+    }
+    Ok(())
+}
+
+fn validate_instance(instance: &ProviderInstanceConfig, provider_name: &str) -> anyhow::Result<()> {
+    if instance.priority < 1 {
+        anyhow::bail!("{} instance '{}': priority must be >= 1", provider_name, instance.name);
+    }
+    Ok(())
+}
+
+fn validate_anthropic_instance(instance: &AnthropicInstanceConfig) -> anyhow::Result<()> {
+    if instance.priority < 1 {
+        anyhow::bail!("Anthropic instance '{}': priority must be >= 1", instance.name);
+    }
+    if instance.api_version.is_empty() {
+        anyhow::bail!("Anthropic instance '{}': api_version cannot be empty", instance.name);
+    }
+    Ok(())
+}
+
+trait InstanceName {
+    fn get_name(&self) -> &str;
+}
+
+impl InstanceName for ProviderInstanceConfig {
+    fn get_name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl InstanceName for AnthropicInstanceConfig {
+    fn get_name(&self) -> &str {
+        &self.name
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,13 +250,18 @@ mod tests {
     #[test]
     fn test_validate_config_requires_enabled_provider() {
         let mut cfg = create_test_config();
-        cfg.providers.openai.enabled = false;
-        cfg.providers.anthropic.enabled = false;
-        cfg.providers.gemini.enabled = false;
+        // Disable all instances
+        for instance in &mut cfg.providers.openai {
+            instance.enabled = false;
+        }
+        for instance in &mut cfg.providers.anthropic {
+            instance.enabled = false;
+        }
+        cfg.providers.gemini.clear();
 
         let result = validate_config(&cfg);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("At least one provider must be enabled"));
+        assert!(result.unwrap_err().to_string().contains("At least one provider instance must be enabled"));
     }
 
     #[test]
@@ -175,6 +272,25 @@ mod tests {
         let result = validate_config(&cfg);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("At least one API key must be configured"));
+    }
+
+    #[test]
+    fn test_validate_unique_instance_names() {
+        let mut cfg = create_test_config();
+        // Add duplicate instance name
+        cfg.providers.openai.push(ProviderInstanceConfig {
+            name: "openai-primary".to_string(), // Duplicate name
+            enabled: true,
+            api_key: "sk-test2".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            timeout_seconds: 300,
+            priority: 2,
+            failure_timeout_seconds: 60,
+        });
+
+        let result = validate_config(&cfg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("duplicated"));
     }
 
     fn create_test_config() -> Config {
@@ -204,25 +320,26 @@ mod tests {
                 },
             },
             providers: ProvidersConfig {
-                openai: ProviderConfig {
+                openai: vec![ProviderInstanceConfig {
+                    name: "openai-primary".to_string(),
                     enabled: true,
                     api_key: "sk-test".to_string(),
                     base_url: "https://api.openai.com/v1".to_string(),
                     timeout_seconds: 300,
-                },
-                anthropic: AnthropicConfig {
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
+                anthropic: vec![AnthropicInstanceConfig {
+                    name: "anthropic-primary".to_string(),
                     enabled: false,
                     api_key: "sk-ant-test".to_string(),
                     base_url: "https://api.anthropic.com/v1".to_string(),
                     timeout_seconds: 300,
                     api_version: "2023-06-01".to_string(),
-                },
-                gemini: ProviderConfig {
-                    enabled: false,
-                    api_key: "test".to_string(),
-                    base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
-                    timeout_seconds: 300,
-                },
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
+                gemini: vec![],
             },
             metrics: MetricsConfig {
                 enabled: true,

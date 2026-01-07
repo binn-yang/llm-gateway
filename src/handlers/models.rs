@@ -35,7 +35,7 @@ pub async fn list_models(State(_state): State<AppState>) -> impl IntoResponse {
 mod tests {
     use super::*;
     use crate::config::{
-        AnthropicConfig, ApiKeyConfig, Config, DiscoveryConfig, MetricsConfig, ProviderConfig,
+        AnthropicInstanceConfig, ApiKeyConfig, Config, DiscoveryConfig, MetricsConfig, ProviderInstanceConfig,
         ProvidersConfig, RoutingConfig, ServerConfig,
     };
     use crate::router::ModelRouter;
@@ -70,25 +70,34 @@ mod tests {
                 },
             },
             providers: ProvidersConfig {
-                openai: ProviderConfig {
+                openai: vec![ProviderInstanceConfig {
+                    name: "openai-test".to_string(),
                     enabled: true,
                     api_key: "sk-test".to_string(),
                     base_url: "https://api.openai.com/v1".to_string(),
                     timeout_seconds: 300,
-                },
-                anthropic: AnthropicConfig {
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
+                anthropic: vec![AnthropicInstanceConfig {
+                    name: "anthropic-test".to_string(),
                     enabled: true,
                     api_key: "test".to_string(),
                     base_url: "https://api.anthropic.com/v1".to_string(),
                     timeout_seconds: 300,
                     api_version: "2023-06-01".to_string(),
-                },
-                gemini: ProviderConfig {
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
+                gemini: vec![ProviderInstanceConfig {
+                    name: "gemini-test".to_string(),
                     enabled: false,
                     api_key: "test".to_string(),
                     base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
                     timeout_seconds: 300,
-                },
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
             },
             metrics: MetricsConfig {
                 enabled: true,
@@ -100,11 +109,13 @@ mod tests {
         let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(config)));
         let router = Arc::new(ModelRouter::new(config.clone()));
         let http_client = reqwest::Client::new();
+        let load_balancers = Arc::new(HashMap::new());
 
         AppState {
             config,
             router,
             http_client,
+            load_balancers,
         }
     }
 

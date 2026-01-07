@@ -167,25 +167,61 @@ mod tests {
 pub fn create_native_anthropic_sse_stream(
     response: reqwest::Response,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let stream = response.bytes_stream().map(|chunk_result| {
-        match chunk_result {
-            Ok(bytes) => {
-                // 直接转发原始 SSE 数据
-                let text = String::from_utf8_lossy(&bytes);
+    use std::sync::{Arc, Mutex};
 
-                // SSE 格式：每行可能是 "event: xxx" 或 "data: {...}"
-                // 直接转发整个块，保持 Anthropic 原生格式
-                if !text.is_empty() {
-                    Ok(Event::default().data(text.to_string()))
-                } else {
-                    Ok(Event::default().data(""))
+    // Shared buffer for handling chunks that span SSE event boundaries
+    let buffer = Arc::new(Mutex::new(String::new()));
+
+    let stream = response.bytes_stream().flat_map(move |chunk_result| {
+        let buffer = buffer.clone();
+
+        futures::stream::iter(match chunk_result {
+            Ok(bytes) => {
+                let chunk_text = String::from_utf8_lossy(&bytes).to_string();
+                let mut events = Vec::new();
+
+                // Append to buffer
+                let mut buf = buffer.lock().unwrap();
+                buf.push_str(&chunk_text);
+
+                // Process complete SSE events (terminated by double newline)
+                while let Some(event_end) = buf.find("\n\n") {
+                    let event_text = buf[..event_end].to_string();
+                    *buf = buf[event_end + 2..].to_string(); // +2 to skip "\n\n"
+
+                    // Parse this complete SSE event
+                    let mut current_event_type: Option<String> = None;
+                    let mut current_data_lines: Vec<String> = Vec::new();
+
+                    for line in event_text.lines() {
+                        if let Some(event_name) = line.strip_prefix("event: ") {
+                            current_event_type = Some(event_name.trim().to_string());
+                        } else if let Some(data) = line.strip_prefix("data: ") {
+                            current_data_lines.push(data.to_string());
+                        }
+                    }
+
+                    // Build the SSE event
+                    if !current_data_lines.is_empty() {
+                        let data = current_data_lines.join("\n");
+                        let mut event = Event::default().data(data);
+
+                        if let Some(event_type) = current_event_type {
+                            event = event.event(event_type);
+                        }
+
+                        events.push(Ok(event));
+                    }
                 }
+
+                drop(buf); // Release lock before returning
+                events
             }
             Err(e) => {
                 tracing::error!("Native Anthropic stream error: {}", e);
-                Ok(Event::default().data(""))
+                vec![]
             }
-        }
+        })
     });
 
     Sse::new(stream).keep_alive(KeepAlive::default())

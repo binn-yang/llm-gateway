@@ -2,7 +2,7 @@ use crate::{config::Config, error::AppError};
 use std::sync::Arc;
 
 /// Provider types
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Provider {
     OpenAI,
     Anthropic,
@@ -85,26 +85,26 @@ impl ModelRouter {
         let provider_name = self.match_model_to_provider(model, &config)?;
         let provider: Provider = provider_name.parse()?;
 
-        // Check if the provider is enabled
+        // Check if the provider has at least one enabled instance
         match provider {
             Provider::OpenAI => {
-                if !config.providers.openai.enabled {
+                if !config.providers.openai.iter().any(|p| p.enabled) {
                     return Err(AppError::ProviderDisabled(
-                        "OpenAI provider is disabled".to_string(),
+                        "OpenAI provider has no enabled instances".to_string(),
                     ));
                 }
             }
             Provider::Anthropic => {
-                if !config.providers.anthropic.enabled {
+                if !config.providers.anthropic.iter().any(|p| p.enabled) {
                     return Err(AppError::ProviderDisabled(
-                        "Anthropic provider is disabled".to_string(),
+                        "Anthropic provider has no enabled instances".to_string(),
                     ));
                 }
             }
             Provider::Gemini => {
-                if !config.providers.gemini.enabled {
+                if !config.providers.gemini.iter().any(|p| p.enabled) {
                     return Err(AppError::ProviderDisabled(
-                        "Gemini provider is disabled".to_string(),
+                        "Gemini provider has no enabled instances".to_string(),
                     ));
                 }
             }
@@ -162,8 +162,8 @@ impl ModelRouter {
 mod tests {
     use super::*;
     use crate::config::{
-        AnthropicConfig, ApiKeyConfig, DiscoveryConfig, MetricsConfig, ProviderConfig,
-        ProvidersConfig, RoutingConfig, ServerConfig,
+        AnthropicInstanceConfig, ApiKeyConfig, DiscoveryConfig, MetricsConfig,
+        ProviderInstanceConfig, ProvidersConfig, RoutingConfig, ServerConfig,
     };
     use std::collections::HashMap;
 
@@ -198,25 +198,34 @@ mod tests {
                 },
             },
             providers: ProvidersConfig {
-                openai: ProviderConfig {
+                openai: vec![ProviderInstanceConfig {
+                    name: "openai-primary".to_string(),
                     enabled: true,
                     api_key: "sk-test".to_string(),
                     base_url: "https://api.openai.com/v1".to_string(),
                     timeout_seconds: 300,
-                },
-                anthropic: AnthropicConfig {
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
+                anthropic: vec![AnthropicInstanceConfig {
+                    name: "anthropic-primary".to_string(),
                     enabled: true,
                     api_key: "sk-ant-test".to_string(),
                     base_url: "https://api.anthropic.com/v1".to_string(),
                     timeout_seconds: 300,
                     api_version: "2023-06-01".to_string(),
-                },
-                gemini: ProviderConfig {
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
+                gemini: vec![ProviderInstanceConfig {
+                    name: "gemini-primary".to_string(),
                     enabled: true,
                     api_key: "test".to_string(),
                     base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
                     timeout_seconds: 300,
-                },
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                }],
             },
             metrics: MetricsConfig {
                 enabled: true,
@@ -290,7 +299,7 @@ mod tests {
     #[test]
     fn test_route_disabled_provider() {
         let mut config = create_test_config();
-        config.providers.anthropic.enabled = false;
+        config.providers.anthropic[0].enabled = false;
 
         let router = ModelRouter::new(Arc::new(arc_swap::ArcSwap::new(Arc::new(config))));
         let result = router.route("claude-3-5-sonnet-20241022");

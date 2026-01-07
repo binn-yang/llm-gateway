@@ -42,6 +42,24 @@ fn init_metric_descriptions() {
         "Gateway version and build information"
     );
 
+    // Instance-level metrics
+    describe_counter!(
+        "llm_gateway_instance_requests_total",
+        "Total requests per provider instance"
+    );
+    describe_gauge!(
+        "llm_gateway_instance_health_status",
+        "Health status of provider instances (1=healthy, 0=unhealthy)"
+    );
+    describe_gauge!(
+        "llm_gateway_session_count",
+        "Number of active sessions per provider"
+    );
+    describe_histogram!(
+        "llm_gateway_lock_wait_seconds",
+        "Time spent waiting for locks"
+    );
+
     // Set gateway info metric
     gauge!("llm_gateway_info", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 }
@@ -91,6 +109,46 @@ pub fn record_error(api_key: &str, provider: &str, model: &str, error_type: &str
         "error_type" => error_type.to_string(),
     )
     .increment(1);
+}
+
+/// Record an instance request
+pub fn record_instance_request(provider: &str, instance: &str, status: &str) {
+    counter!(
+        "llm_gateway_instance_requests_total",
+        "provider" => provider.to_string(),
+        "instance" => instance.to_string(),
+        "status" => status.to_string(),
+    )
+    .increment(1);
+}
+
+/// Update instance health status
+pub fn update_instance_health(provider: &str, instance: &str, is_healthy: bool) {
+    gauge!(
+        "llm_gateway_instance_health_status",
+        "provider" => provider.to_string(),
+        "instance" => instance.to_string(),
+    )
+    .set(if is_healthy { 1.0 } else { 0.0 });
+}
+
+/// Update session count for a provider
+pub fn update_session_count(provider: &str, count: usize) {
+    gauge!(
+        "llm_gateway_session_count",
+        "provider" => provider.to_string(),
+    )
+    .set(count as f64);
+}
+
+/// Record lock wait time
+pub fn record_lock_wait(lock_name: &str, operation: &str, duration: Duration) {
+    histogram!(
+        "llm_gateway_lock_wait_seconds",
+        "lock_name" => lock_name.to_string(),
+        "operation" => operation.to_string(),
+    )
+    .record(duration.as_secs_f64());
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 use crate::{
-    config::AnthropicConfig,
+    config::AnthropicInstanceConfig,
     error::AppError,
     models::anthropic::MessagesRequest,
 };
@@ -9,7 +9,7 @@ use std::time::Duration;
 /// Call Anthropic Messages API
 pub async fn create_message(
     client: &Client,
-    config: &AnthropicConfig,
+    config: &AnthropicInstanceConfig,
     request: MessagesRequest,
 ) -> Result<reqwest::Response, AppError> {
     let url = format!("{}/messages", config.base_url);
@@ -42,20 +42,23 @@ mod tests {
     use super::*;
     use crate::models::anthropic::Message;
 
-    fn create_test_config() -> AnthropicConfig {
-        AnthropicConfig {
+    fn create_test_config() -> AnthropicInstanceConfig {
+        AnthropicInstanceConfig {
+            name: "test-instance".to_string(),
             enabled: true,
             api_key: "sk-ant-test-key".to_string(),
             base_url: "https://api.anthropic.com/v1".to_string(),
             timeout_seconds: 30,
             api_version: "2023-06-01".to_string(),
+            priority: 1,
+            failure_timeout_seconds: 60,
         }
     }
 
     fn create_test_request() -> MessagesRequest {
         MessagesRequest {
             model: "claude-3-5-sonnet-20241022".to_string(),
-            system: Some("You are helpful.".to_string()),
+            system: Some("You are helpful".to_string()),
             messages: vec![Message {
                 role: "user".to_string(),
                 content: "Hello!".to_string(),
@@ -66,6 +69,8 @@ mod tests {
             top_k: None,
             stream: Some(false),
             stop_sequences: None,
+            tools: None,
+            tool_choice: None,
         }
     }
 

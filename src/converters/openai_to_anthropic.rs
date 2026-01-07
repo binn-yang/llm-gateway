@@ -49,6 +49,8 @@ pub fn convert_request(openai_req: &ChatCompletionRequest) -> Result<MessagesReq
         top_k: None, // OpenAI doesn't have top_k
         stream: openai_req.stream,
         stop_sequences,
+        tools: None, // TODO: Convert OpenAI tools to Anthropic format
+        tool_choice: None,
     })
 }
 

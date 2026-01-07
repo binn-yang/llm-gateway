@@ -1,5 +1,5 @@
 use crate::{
-    config::ProviderConfig,
+    config::ProviderInstanceConfig,
     error::AppError,
     models::openai::ChatCompletionRequest,
 };
@@ -9,7 +9,7 @@ use std::time::Duration;
 /// Call OpenAI Chat Completions API
 pub async fn chat_completions(
     client: &Client,
-    config: &ProviderConfig,
+    config: &ProviderInstanceConfig,
     request: ChatCompletionRequest,
 ) -> Result<reqwest::Response, AppError> {
     let url = format!("{}/chat/completions", config.base_url);
@@ -41,12 +41,15 @@ mod tests {
     use super::*;
     use crate::models::openai::ChatMessage;
 
-    fn create_test_config() -> ProviderConfig {
-        ProviderConfig {
+    fn create_test_config() -> ProviderInstanceConfig {
+        ProviderInstanceConfig {
+            name: "test-instance".to_string(),
             enabled: true,
             api_key: "sk-test-key".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
             timeout_seconds: 30,
+            priority: 1,
+            failure_timeout_seconds: 60,
         }
     }
 
