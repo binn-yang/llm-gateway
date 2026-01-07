@@ -33,6 +33,12 @@ pub struct MessagesRequest {
     /// Tool choice configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    /// Extended thinking configuration (Claude extended thinking feature)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingConfig>,
+    /// Request metadata (for tracking and filtering)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<RequestMetadata>,
 }
 
 /// Tool definition for function calling
@@ -44,6 +50,17 @@ pub struct Tool {
     pub description: String,
     /// JSON schema for tool input
     pub input_schema: serde_json::Value,
+    /// Cache control (for prompt caching)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
+/// Cache control for prompt caching
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CacheControl {
+    /// Cache type (always "ephemeral" for now)
+    #[serde(rename = "type")]
+    pub cache_type: String,
 }
 
 /// Tool choice configuration
@@ -58,8 +75,30 @@ pub enum ToolChoice {
     Tool { r#type: String, name: String },
 }
 
-/// Message content - supports both string and content blocks format
+/// Extended thinking configuration (Claude extended thinking feature)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThinkingConfig {
+    /// Thinking type (e.g., "enabled")
+    #[serde(rename = "type")]
+    pub thinking_type: String,
+    /// Budget for thinking tokens (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_tokens: Option<u32>,
+}
+
+/// Request metadata for tracking and filtering
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestMetadata {
+    /// User ID for tracking
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    /// Custom metadata fields
+    #[serde(flatten)]
+    pub custom: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// Message content - supports both string and content blocks format
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MessageContent {
     /// Simple text string format: "Hello"
@@ -102,14 +141,17 @@ pub struct MessagesResponse {
 }
 
 /// Content block
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContentBlock {
-    /// Block type (e.g., "text", "tool_use", "tool_result")
+    /// Block type (e.g., "text", "image", "tool_use", "tool_result", "thinking")
     #[serde(rename = "type")]
     pub block_type: String,
     /// Text content (for text blocks)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Image source (for image blocks)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<ImageSource>,
     /// Tool use ID (for tool_use blocks)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -128,6 +170,28 @@ pub struct ContentBlock {
     /// Is error flag (for tool_result blocks)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
+    /// Cache control (for prompt caching)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+    /// Thinking field: accepts any format, forwarded as-is to Anthropic API
+    /// No type checking - validation is done by Anthropic API
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<serde_json::Value>,
+}
+
+/// Image source for image content blocks
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ImageSource {
+    /// Base64-encoded image data
+    Base64 {
+        media_type: String,
+        data: String,
+    },
+    /// Image URL (note: Anthropic API may not support this, but included for completeness)
+    Url {
+        url: String,
+    },
 }
 
 /// Token usage information
@@ -137,6 +201,12 @@ pub struct TokenUsage {
     pub input_tokens: u64,
     /// Output tokens
     pub output_tokens: u64,
+    /// Cache creation input tokens (for prompt caching)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u64>,
+    /// Cache read input tokens (for prompt caching)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
 }
 
 /// Streaming event from Anthropic SSE
@@ -178,7 +248,7 @@ pub struct MessageData {
 /// Delta for streaming updates
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Delta {
-    /// Delta type (e.g., "text_delta")
+    /// Delta type (e.g., "text_delta", "input_json_delta")
     #[serde(rename = "type")]
     pub delta_type: String,
     /// Text content (for text deltas)
@@ -187,6 +257,9 @@ pub struct Delta {
     /// Stop reason (for message_delta)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
+    /// Partial JSON input (for tool use input_json_delta)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial_json: Option<String>,
 }
 
 #[cfg(test)]
@@ -210,6 +283,8 @@ mod tests {
             tool_choice: None,
             stream: Some(false),
             stop_sequences: None,
+            thinking: None,
+            metadata: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -238,7 +313,7 @@ mod tests {
 
         let response: MessagesResponse = serde_json::from_str(json).unwrap();
         assert_eq!(response.id, "msg_123");
-        assert_eq!(response.content[0].text, "Hello! How can I help you?");
+        assert_eq!(response.content[0].text.as_ref().unwrap(), "Hello! How can I help you?");
         assert_eq!(response.usage.input_tokens, 10);
         assert_eq!(response.usage.output_tokens, 25);
     }
@@ -267,5 +342,77 @@ mod tests {
 
         let event: StreamEvent = serde_json::from_str(json).unwrap();
         assert_eq!(event.event_type, "message_stop");
+    }
+
+    #[test]
+    fn test_deserialize_thinking_as_string() {
+        let json = r#"{
+            "type": "text",
+            "text": "hello",
+            "thinking": "some thought"
+        }"#;
+
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        assert!(block.thinking.is_some());
+        assert_eq!(block.thinking.as_ref().unwrap().as_str(), Some("some thought"));
+    }
+
+    #[test]
+    fn test_deserialize_thinking_as_object_without_signature() {
+        let json = r#"{
+            "type": "text",
+            "text": "hello",
+            "thinking": {
+                "thinking": "some thought"
+            }
+        }"#;
+
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        assert!(block.thinking.is_some());
+        // thinking 被保留为 Value，不会反序列化失败
+    }
+
+    #[test]
+    fn test_deserialize_thinking_as_full_object() {
+        let json = r#"{
+            "type": "text",
+            "text": "hello",
+            "thinking": {
+                "thinking": "some thought",
+                "signature": "valid_sig"
+            }
+        }"#;
+
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        assert!(block.thinking.is_some());
+        let thinking = block.thinking.as_ref().unwrap();
+        assert!(thinking.get("thinking").is_some());
+        assert!(thinking.get("signature").is_some());
+    }
+
+    #[test]
+    fn test_serialize_preserves_thinking() {
+        let block = ContentBlock {
+            block_type: "text".to_string(),
+            text: Some("hello".to_string()),
+            source: None,
+            id: None,
+            name: None,
+            input: None,
+            tool_use_id: None,
+            content: None,
+            is_error: None,
+            cache_control: None,
+            thinking: Some(serde_json::json!({"custom": "format", "data": 123})),
+        };
+
+        let json = serde_json::to_string(&block).unwrap();
+        assert!(json.contains("\"thinking\""));
+        assert!(json.contains("\"custom\""));
+        assert!(json.contains("\"data\""));
+
+        // Verify round-trip
+        let deserialized: ContentBlock = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.thinking, block.thinking);
     }
 }

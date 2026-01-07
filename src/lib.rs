@@ -1,8 +1,10 @@
 pub mod auth;
 pub mod config;
+pub mod conversion_warnings;
 pub mod converters;
 pub mod error;
 pub mod handlers;
+pub mod image_utils;
 pub mod load_balancer;
 pub mod metrics;
 pub mod models;

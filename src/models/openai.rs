@@ -34,6 +34,210 @@ pub struct ChatCompletionRequest {
     /// User identifier
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+    /// Tools (functions) available to the model
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Tool>>,
+    /// How the model should use tools
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<ToolChoice>,
+    /// Response format (for JSON mode and structured outputs)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
+    /// Seed for deterministic sampling
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    /// Whether to return log probabilities
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<bool>,
+    /// Number of most likely tokens to return at each position (0-20)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_logprobs: Option<u32>,
+    /// Token probability bias (map of token ID to bias value -100 to 100)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logit_bias: Option<std::collections::HashMap<String, f32>>,
+    /// Service tier ("auto" or "default")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+}
+
+/// Message content - supports both simple string and multimodal content blocks
+/// This uses #[serde(untagged)] for backward compatibility with existing string-only content
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MessageContent {
+    /// Simple text string format: "Hello"
+    Text(String),
+    /// Content blocks format for multimodal content: [{\"type\": \"text\", \"text\": \"Hello\"}, {\"type\": \"image_url\", ...}]
+    Blocks(Vec<ContentBlock>),
+}
+
+impl MessageContent {
+    /// Get text content if this is a Text variant
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            MessageContent::Text(s) => Some(s),
+            MessageContent::Blocks(_) => None,
+        }
+    }
+
+    /// Check if this is text-only content
+    pub fn is_text_only(&self) -> bool {
+        matches!(self, MessageContent::Text(_))
+    }
+
+    /// Get content blocks if this is a Blocks variant
+    pub fn blocks(&self) -> Option<&Vec<ContentBlock>> {
+        match self {
+            MessageContent::Blocks(blocks) => Some(blocks),
+            MessageContent::Text(_) => None,
+        }
+    }
+
+    /// Extract all text content from either variant
+    pub fn extract_text(&self) -> String {
+        match self {
+            MessageContent::Text(s) => s.clone(),
+            MessageContent::Blocks(blocks) => {
+                blocks.iter()
+                    .filter_map(|block| {
+                        if let ContentBlock::Text { text } = block {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("")
+            }
+        }
+    }
+}
+
+/// Content block for multimodal messages
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentBlock {
+    /// Text content block
+    Text {
+        text: String,
+    },
+    /// Image URL content block
+    ImageUrl {
+        image_url: ImageUrl,
+    },
+    /// Tool use block (for function calling responses)
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    /// Tool result block (for function calling)
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        tool_call_id: String,
+        content: String,
+    },
+}
+
+/// Image URL specification
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImageUrl {
+    /// URL to the image (can be http(s):// or data: URL)
+    pub url: String,
+    /// Image detail level (low, high, auto)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Tool (function) definition
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Tool {
+    /// Tool type (always "function" for now)
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    /// Function definition
+    pub function: FunctionDefinition,
+}
+
+/// Function definition
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FunctionDefinition {
+    /// Function name
+    pub name: String,
+    /// Function description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// JSON Schema for function parameters
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<serde_json::Value>,
+}
+
+/// Tool choice setting
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ToolChoice {
+    /// "none", "auto", or "required"
+    String(String),
+    /// Specific tool to use
+    Specific { r#type: String, function: ToolChoiceFunction },
+}
+
+/// Specific tool choice function
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolChoiceFunction {
+    /// Function name to use
+    pub name: String,
+}
+
+/// Tool call (in assistant response)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// Tool call ID
+    pub id: String,
+    /// Type (always "function")
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    /// Function call details
+    pub function: FunctionCall,
+}
+
+/// Function call details
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FunctionCall {
+    /// Function name
+    pub name: String,
+    /// Function arguments (JSON string)
+    pub arguments: String,
+}
+
+/// Response format for controlling output structure
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseFormat {
+    /// Plain text response (default)
+    Text,
+    /// JSON object response
+    JsonObject,
+    /// Structured JSON response with schema
+    JsonSchema {
+        json_schema: JsonSchemaSpec,
+    },
+}
+
+/// JSON Schema specification for structured outputs
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JsonSchemaSpec {
+    /// Schema name
+    pub name: String,
+    /// Schema description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// JSON Schema definition
+    pub schema: serde_json::Value,
+    /// Whether to enforce strict schema adherence
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
 }
 
 /// Chat message
@@ -41,11 +245,14 @@ pub struct ChatCompletionRequest {
 pub struct ChatMessage {
     /// Role: system, user, or assistant
     pub role: String,
-    /// Message content
-    pub content: String,
+    /// Message content (supports both string and multimodal blocks)
+    pub content: MessageContent,
     /// Optional name
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Tool calls (for assistant messages)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
 }
 
 /// OpenAI Chat Completion Response (non-streaming)
@@ -76,6 +283,43 @@ pub struct ChatChoice {
     /// Finish reason
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
+    /// Log probabilities (if requested)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logprobs: Option<LogProbsResult>,
+}
+
+/// Log probabilities result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogProbsResult {
+    /// Log probabilities for each token
+    pub content: Vec<TokenLogProbs>,
+}
+
+/// Log probabilities for a single token
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenLogProbs {
+    /// The token
+    pub token: String,
+    /// Log probability
+    pub logprob: f32,
+    /// Byte positions
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<Vec<u8>>,
+    /// Top alternative tokens with their log probabilities
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_logprobs: Option<Vec<TopLogProb>>,
+}
+
+/// Top alternative token with log probability
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopLogProb {
+    /// The token
+    pub token: String,
+    /// Log probability
+    pub logprob: f32,
+    /// Byte positions
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<Vec<u8>>,
 }
 
 /// Token usage information
@@ -128,6 +372,37 @@ pub struct Delta {
     /// Incremental content
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    /// Tool calls (for streaming tool use)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCallDelta>>,
+}
+
+/// Tool call delta for streaming
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallDelta {
+    /// Index of the tool call
+    pub index: u32,
+    /// Tool call ID (only in first chunk of this tool call)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Tool type (always "function")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type")]
+    pub tool_type: Option<String>,
+    /// Function details
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function: Option<FunctionCallDelta>,
+}
+
+/// Function call delta for streaming
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionCallDelta {
+    /// Function name (only in first chunk)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Partial arguments (JSON string fragments)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
 }
 
 #[cfg(test)]
@@ -141,13 +416,15 @@ mod tests {
             messages: vec![
                 ChatMessage {
                     role: "system".to_string(),
-                    content: "You are a helpful assistant.".to_string(),
+                    content: MessageContent::Text("You are a helpful assistant.".to_string()),
                     name: None,
+                    tool_calls: None,
                 },
                 ChatMessage {
                     role: "user".to_string(),
-                    content: "Hello!".to_string(),
+                    content: MessageContent::Text("Hello!".to_string()),
                     name: None,
+                    tool_calls: None,
                 },
             ],
             max_tokens: Some(100),
@@ -159,6 +436,14 @@ mod tests {
             presence_penalty: None,
             frequency_penalty: None,
             user: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            seed: None,
+            logprobs: None,
+            top_logprobs: None,
+            logit_bias: None,
+            service_tier: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -190,8 +475,36 @@ mod tests {
 
         let response: ChatCompletionResponse = serde_json::from_str(json).unwrap();
         assert_eq!(response.id, "chatcmpl-123");
-        assert_eq!(response.choices[0].message.content, "Hello! How can I help you?");
+        assert_eq!(response.choices[0].message.content.extract_text(), "Hello! How can I help you?");
         assert_eq!(response.usage.as_ref().unwrap().total_tokens, 19);
+    }
+
+    #[test]
+    fn test_message_content_backward_compatibility() {
+        // Test that simple string content still works (backward compatibility)
+        let json = r#"{"role":"user","content":"Hello"}"#;
+        let message: ChatMessage = serde_json::from_str(json).unwrap();
+        assert!(message.content.is_text_only());
+        assert_eq!(message.content.as_text().unwrap(), "Hello");
+    }
+
+    #[test]
+    fn test_message_content_blocks() {
+        // Test multimodal content blocks
+        let json = r#"{"role":"user","content":[{"type":"text","text":"Hello"},{"type":"image_url","image_url":{"url":"https://example.com/image.jpg"}}]}"#;
+        let message: ChatMessage = serde_json::from_str(json).unwrap();
+        assert!(!message.content.is_text_only());
+        assert_eq!(message.content.blocks().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_extract_text() {
+        // Test extracting text from blocks
+        let content = MessageContent::Blocks(vec![
+            ContentBlock::Text { text: "Hello ".to_string() },
+            ContentBlock::Text { text: "world".to_string() },
+        ]);
+        assert_eq!(content.extract_text(), "Hello world");
     }
 
     #[test]

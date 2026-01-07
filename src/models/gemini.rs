@@ -13,6 +13,17 @@ pub struct GenerateContentRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "generationConfig")]
     pub generation_config: Option<GenerationConfig>,
+    /// Safety settings (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "safetySettings")]
+    pub safety_settings: Option<Vec<SafetySetting>>,
+    /// Tools (function declarations) available to the model
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<Tool>>,
+    /// Tool configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "toolConfig")]
+    pub tool_config: Option<ToolConfig>,
 }
 
 /// System instruction
@@ -30,10 +41,47 @@ pub struct Content {
     pub parts: Vec<Part>,
 }
 
-/// Part (text content)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Part {
-    pub text: String,
+/// Part - multimodal content part
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Part {
+    /// Text content
+    Text {
+        text: String,
+    },
+    /// Inline data (e.g., base64-encoded images)
+    InlineData {
+        inline_data: InlineData,
+    },
+    /// Function call (for tool use)
+    FunctionCall {
+        function_call: FunctionCall,
+    },
+    /// Function response (for tool results)
+    FunctionResponse {
+        function_response: FunctionResponse,
+    },
+}
+
+/// Inline data for images and other binary content
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InlineData {
+    pub mime_type: String,
+    pub data: String, // base64-encoded
+}
+
+/// Function call for tool use
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FunctionCall {
+    pub name: String,
+    pub args: serde_json::Value,
+}
+
+/// Function response for tool results
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FunctionResponse {
+    pub name: String,
+    pub response: serde_json::Value,
 }
 
 /// Generation configuration
@@ -53,6 +101,14 @@ pub struct GenerationConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "stopSequences")]
     pub stop_sequences: Option<Vec<String>>,
+    /// Response MIME type (e.g., "application/json" for JSON mode)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "responseMimeType")]
+    pub response_mime_type: Option<String>,
+    /// Response schema (JSON Schema for structured output)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "responseSchema")]
+    pub response_schema: Option<serde_json::Value>,
 }
 
 /// Gemini Generate Content Response (non-streaming)
@@ -85,11 +141,59 @@ pub struct Candidate {
     pub safety_ratings: Option<Vec<SafetyRating>>,
 }
 
-/// Safety rating
+/// Safety rating (in responses)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SafetyRating {
     pub category: String,
     pub probability: String,
+}
+
+/// Safety setting (in requests)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SafetySetting {
+    /// Harm category (e.g., "HARM_CATEGORY_HATE_SPEECH")
+    pub category: String,
+    /// Threshold level (e.g., "BLOCK_MEDIUM_AND_ABOVE", "BLOCK_ONLY_HIGH", "BLOCK_LOW_AND_ABOVE", "BLOCK_NONE")
+    pub threshold: String,
+}
+
+/// Tool definition for function calling
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Tool {
+    /// Function declarations
+    #[serde(rename = "functionDeclarations")]
+    pub function_declarations: Vec<FunctionDeclaration>,
+}
+
+/// Function declaration (Gemini's tool format)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionDeclaration {
+    /// Function name
+    pub name: String,
+    /// Function description
+    pub description: String,
+    /// Parameters schema (JSON Schema)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<serde_json::Value>,
+}
+
+/// Tool configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolConfig {
+    /// Function calling config
+    #[serde(rename = "functionCallingConfig")]
+    pub function_calling_config: FunctionCallingConfig,
+}
+
+/// Function calling configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionCallingConfig {
+    /// Mode: "AUTO", "ANY", "NONE"
+    pub mode: String,
+    /// Allowed function names (when mode is "ANY")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "allowedFunctionNames")]
+    pub allowed_function_names: Option<Vec<String>>,
 }
 
 /// Usage metadata
@@ -112,12 +216,12 @@ mod tests {
         let request = GenerateContentRequest {
             contents: vec![Content {
                 role: "user".to_string(),
-                parts: vec![Part {
+                parts: vec![Part::Text {
                     text: "Hello!".to_string(),
                 }],
             }],
             system_instruction: Some(SystemInstruction {
-                parts: vec![Part {
+                parts: vec![Part::Text {
                     text: "You are helpful.".to_string(),
                 }],
             }),
@@ -127,7 +231,12 @@ mod tests {
                 top_k: None,
                 max_output_tokens: Some(1024),
                 stop_sequences: None,
+                response_mime_type: None,
+                response_schema: None,
             }),
+            safety_settings: None,
+            tools: None,
+            tool_config: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -157,7 +266,11 @@ mod tests {
         }"#;
 
         let response: GenerateContentResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(response.candidates[0].content.parts[0].text, "Hello! How can I help?");
+        if let Part::Text { text } = &response.candidates[0].content.parts[0] {
+            assert_eq!(text, "Hello! How can I help?");
+        } else {
+            panic!("Expected Text part");
+        }
         assert_eq!(
             response.usage_metadata.as_ref().unwrap().prompt_token_count,
             5
@@ -166,5 +279,30 @@ mod tests {
             response.usage_metadata.as_ref().unwrap().candidates_token_count,
             10
         );
+    }
+
+    #[test]
+    fn test_part_backward_compatibility() {
+        // Test that simple text parts still deserialize correctly
+        let json = r#"{"text": "Hello world"}"#;
+        let part: Part = serde_json::from_str(json).unwrap();
+        if let Part::Text { text } = part {
+            assert_eq!(text, "Hello world");
+        } else {
+            panic!("Expected Text part");
+        }
+    }
+
+    #[test]
+    fn test_part_inline_data() {
+        // Test inline data for images
+        let json = r#"{"inline_data": {"mime_type": "image/jpeg", "data": "base64data"}}"#;
+        let part: Part = serde_json::from_str(json).unwrap();
+        if let Part::InlineData { inline_data } = part {
+            assert_eq!(inline_data.mime_type, "image/jpeg");
+            assert_eq!(inline_data.data, "base64data");
+        } else {
+            panic!("Expected InlineData part");
+        }
     }
 }

@@ -326,3 +326,248 @@ This ensures:
 - Layer 1 (Nginx): API key → specific gateway instance
 - Layer 2 (Gateway): API key → specific provider instance
 - Result: Maximum KV cache hits, no shared state needed
+
+## Development Best Practices
+
+### Data Model Design
+
+#### 1. Avoid Over-Strict Type Definitions for External Data
+
+**Problem**: Using strict Rust types with required fields for data from external clients can cause deserialization failures.
+
+**Example of problematic code**:
+```rust
+// ❌ BAD: Too strict for external data
+pub struct ThinkingBlock {
+    pub thinking: Option<String>,
+    pub signature: String,  // Required field!
+}
+
+#[serde(untagged)]
+pub enum ThinkingContent {
+    String(String),
+    Block(ThinkingBlock),  // Will fail if signature is missing
+}
+```
+
+**Problem**: If official clients (like Claude Code CLI) send slightly different formats, deserialization fails entirely.
+
+**Solution**: Use `serde_json::Value` for fields that don't need validation at gateway level:
+```rust
+// ✅ GOOD: Flexible for external data
+pub struct ContentBlock {
+    // ... other fields ...
+
+    /// Accepts any format, forwarded as-is to upstream API
+    /// Validation is done by upstream API, not gateway
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<serde_json::Value>,
+}
+```
+
+**When to use `Value` vs strong types**:
+- Use `Value` for:
+  - Fields only passed through (not processed by gateway)
+  - Fields where upstream API does validation
+  - Fields with multiple possible formats
+  - Data from official/external clients
+
+- Use strong types for:
+  - Fields you need to read/modify in gateway
+  - Fields where you do business logic
+  - Internal data structures
+  - Configuration files you control
+
+#### 2. Beware of `#[serde(untagged)]` Enum Pitfalls
+
+**Problem**: With `#[serde(untagged)]`, serde tries all variants sequentially. If ANY field fails in ALL variants, the entire deserialization fails.
+
+```rust
+// ❌ DANGEROUS: One bad field kills everything
+#[serde(untagged)]
+pub enum MessageContent {
+    Text(String),
+    Blocks(Vec<ContentBlock>),  // If ContentBlock has strict types, this fails
+}
+```
+
+**Impact**: A single invalid field in one content block causes the entire message to fail.
+
+**Mitigation**:
+- Make inner types flexible (use `Value` for pass-through fields)
+- Add custom deserialize functions with fallback behavior
+- Log warnings instead of errors for optional fields
+
+#### 3. Gateway Responsibility: Forward, Not Validate
+
+**Core Principle**: The gateway's job is routing and forwarding, NOT validating upstream API contracts.
+
+```rust
+// ❌ BAD: Gateway enforcing upstream API rules
+fn sanitize_thinking_fields(request: &mut MessagesRequest) {
+    // Removing fields the client sent!
+    if !is_valid_thinking_format(&block.thinking) {
+        block.thinking = None;  // Data loss!
+    }
+}
+
+// ✅ GOOD: Forward as-is, let upstream validate
+let request: MessagesRequest = serde_json::from_value(raw_request)?;
+// No modification - send exactly what client provided
+providers::anthropic::create_message(&client, config, request).await
+```
+
+**Why**:
+- Official clients (Claude Code CLI) send correct formats
+- If gateway removes fields, information is lost
+- Upstream API will return proper error if format is wrong
+- Gateway shouldn't second-guess official clients
+
+#### 4. Official Client Compatibility is Critical
+
+**Always remember**: Clients like Claude Code CLI are official tools from the same company (Anthropic). If the gateway can't handle their requests, **the gateway is wrong, not the client**.
+
+**Checklist when adding new models**:
+- [ ] Can the model accept all variants official clients might send?
+- [ ] Are required fields actually required by the spec, or just convenient?
+- [ ] Will strict validation break compatibility with future client versions?
+- [ ] Is there a reference implementation (like claude-relay-service) to compare against?
+
+### Testing Strategy
+
+#### Test with Real Client Payloads
+
+Don't just test with synthetic data. Test with actual payloads from:
+- Claude Code CLI
+- Official SDK examples
+- Production traffic (sanitized)
+
+```rust
+#[test]
+fn test_real_claude_code_cli_request() {
+    // Actual payload from Claude Code CLI (sanitized)
+    let json = r#"{
+        "model": "claude-3-5-sonnet-20241022",
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "text",
+                "text": "Hello",
+                "thinking": {"thinking": "...", "signature": "..."}
+            }]
+        }],
+        "max_tokens": 1024
+    }"#;
+
+    let request: MessagesRequest = serde_json::from_str(json).unwrap();
+    assert!(request.messages[0].content.is_some());
+}
+```
+
+#### Test All Format Variants
+
+For fields that accept multiple formats, test ALL of them:
+
+```rust
+#[test]
+fn test_thinking_field_formats() {
+    // String format
+    test_deserialize(r#"{"thinking": "text"}"#);
+
+    // Object without optional fields
+    test_deserialize(r#"{"thinking": {"thinking": "text"}}"#);
+
+    // Object with all fields
+    test_deserialize(r#"{"thinking": {"thinking": "text", "signature": "sig"}}"#);
+
+    // Null/missing
+    test_deserialize(r#"{}"#);
+}
+```
+
+### Debugging Deserialization Failures
+
+When you see errors like "data did not match any variant of untagged enum":
+
+1. **Log the raw JSON** before deserialization:
+```rust
+Json(raw_request): Json<serde_json::Value>
+) -> Result<Response, AppError> {
+    tracing::debug!(request = ?raw_request, "Received raw request");
+
+    let request: MessagesRequest = serde_json::from_value(raw_request.clone())
+        .map_err(|e| {
+            tracing::error!(
+                error = %e,
+                sample = ?serde_json::to_string(&raw_request).ok(),
+                "Deserialization failed"
+            );
+            // ...
+        })?;
+}
+```
+
+2. **Check reference implementations** (like claude-relay-service in Node.js):
+   - How do they handle the same field?
+   - Do they use strict types or flexible objects?
+   - What formats do they accept?
+
+3. **Identify the strict type** causing the failure:
+   - Look for required fields in structs
+   - Look for `#[serde(untagged)]` enums with strict variants
+   - Look for custom deserialize functions that might fail
+
+4. **Relax the type** instead of filtering data:
+   - Change to `Option<serde_json::Value>`
+   - Add `#[serde(default)]` for non-critical fields
+   - Use custom deserialize with fallback
+
+### Error Handling Patterns
+
+#### Distinguish Gateway Errors from Upstream Errors
+
+```rust
+// In src/retry.rs
+pub fn is_instance_failure(error: &AppError) -> bool {
+    match error {
+        // Gateway/network issues - trigger failover
+        AppError::HttpClientError(_) => true,
+        AppError::UpstreamError { status, .. } if status.is_server_error() => true,
+
+        // Business/validation errors - DON'T trigger failover
+        AppError::ConversionError(_) => false,  // Client sent bad data
+        AppError::UpstreamError { status, .. } if status.is_client_error() => false,
+
+        _ => false,
+    }
+}
+```
+
+**Rationale**: Deserialization failures are usually client errors or gateway bugs, NOT provider failures. Don't mark providers unhealthy for these.
+
+### Common Mistakes to Avoid
+
+1. ❌ **Adding validation that upstream API already does**
+   - If Anthropic API validates `thinking.signature`, don't duplicate this in gateway
+
+2. ❌ **Removing fields you don't understand**
+   - Unknown fields should be preserved and forwarded
+
+3. ❌ **Making fields required "for convenience"**
+   - Only make fields required if the upstream API spec requires them
+
+4. ❌ **Not testing with official clients**
+   - Always test with Claude Code CLI, official SDKs, etc.
+
+5. ❌ **Assuming your type definition is "correct"**
+   - The official client's format is the source of truth, not your Rust struct
+
+### Version Compatibility
+
+When upstream APIs add new fields or formats:
+
+- ✅ **Gateway should work without code changes** (if using `Value` for pass-through fields)
+- ✅ **Clients can adopt new features immediately** (gateway doesn't block)
+- ❌ **Don't require gateway updates** for every upstream API change
+
+This is why `serde_json::Value` is preferred for fields that are only passed through.

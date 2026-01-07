@@ -366,6 +366,173 @@ llm_request_duration_seconds{api_key="my-app", provider="anthropic", model="clau
 llm_errors_total{api_key="my-app", provider="anthropic", error_type="rate_limit"}
 ```
 
+## Feature Matrix
+
+The gateway supports comprehensive multimodal features across all providers:
+
+| Feature | OpenAI | Anthropic | Gemini | Notes |
+|---------|:------:|:---------:|:------:|-------|
+| **Text Completion** | ✅ | ✅ | ✅ | Full support |
+| **Streaming** | ✅ | ✅ | ✅ | SSE with real-time conversion |
+| **Vision/Images** | ✅ | ✅ | ✅ | Automatic base64 conversion |
+| **Tool Calling (Non-Streaming)** | ✅ | ✅ | ✅ | Full request/response conversion |
+| **Tool Calling (Streaming)** | ✅ | ✅ | ✅ | Incremental JSON assembly |
+| **Prompt Caching** | ❌ | ✅ | ❌ | Auto-caching for system prompts & tools |
+| **JSON Mode** | ✅ | ✅ ⚠️ | ✅ | ⚠️ = System prompt injection workaround |
+| **JSON Schema** | ✅ | ✅ ⚠️ | ✅ | ⚠️ = System prompt injection workaround |
+| **Conversion Warnings** | N/A | ✅ | ✅ | X-LLM-Gateway-Warnings header |
+
+**Legend:**
+- ✅ = Full native or converted support
+- ⚠️ = Workaround via system prompt injection
+- ❌ = Not supported by provider
+
+### Vision/Image Support
+
+Send images using OpenAI's format (works with all providers):
+
+```json
+{
+  "model": "claude-3-5-sonnet-20241022",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What's in this image?"},
+        {
+          "type": "image_url",
+          "image_url": {
+            "url": "data:image/jpeg;base64,...",
+            "detail": "high"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+The gateway automatically:
+- Converts base64 data URLs for all providers
+- Handles multiple images in a single request
+- Preserves image detail settings
+
+### Tool/Function Calling
+
+Define tools using OpenAI's format:
+
+```json
+{
+  "model": "claude-3-5-sonnet-20241022",
+  "messages": [{"role": "user", "content": "What's the weather?"}],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get current weather",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "location": {"type": "string"}
+          },
+          "required": ["location"]
+        }
+      }
+    }
+  ],
+  "tool_choice": "auto"
+}
+```
+
+The gateway converts to:
+- **Anthropic**: `tools` array with `name`, `description`, `input_schema`
+- **Gemini**: `function_declarations` with parameters schema
+
+Supports:
+- Auto tool selection
+- Required tool use
+- Specific tool forcing
+- Multi-turn conversations with tool results
+- Streaming tool calls with incremental JSON
+
+### Prompt Caching (Anthropic)
+
+Configure auto-caching in `config.toml`:
+
+```toml
+[[providers.anthropic]]
+name = "anthropic-primary"
+# ... other config ...
+
+[providers.anthropic.cache]
+auto_cache_system = true         # Auto-cache large system prompts
+min_system_tokens = 1024          # Minimum tokens to trigger caching
+auto_cache_tools = true           # Auto-cache tool definitions
+```
+
+The gateway automatically:
+- Detects large system prompts (≥1024 tokens)
+- Adds `cache_control` to last system prompt block
+- Caches tool definitions (marked on last tool)
+- Converts Text → Blocks format when needed
+
+**Cost savings**: ~90% reduction on cached content!
+
+### JSON Mode & Structured Outputs
+
+Request JSON responses:
+
+```json
+{
+  "model": "claude-3-5-sonnet-20241022",
+  "messages": [{"role": "user", "content": "List 3 colors"}],
+  "response_format": {"type": "json_object"}
+}
+```
+
+With strict schema:
+
+```json
+{
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "color_list",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "colors": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "required": ["colors"]
+      }
+    }
+  }
+}
+```
+
+**Provider implementation:**
+- **OpenAI**: Native `response_format` support
+- **Gemini**: Native via `response_mime_type` and `response_schema`
+- **Anthropic**: System prompt injection (check `X-LLM-Gateway-Warnings` header)
+
+### Conversion Warnings
+
+When parameters aren't natively supported, the gateway adds warnings via HTTP header:
+
+```http
+X-LLM-Gateway-Warnings: [{"level":"warning","message":"Parameter 'seed' not supported by Anthropic provider, ignoring"}]
+```
+
+Warnings appear for:
+- Unsupported parameters (`seed`, `logprobs`, `logit_bias`, etc.)
+- Provider-specific workarounds (JSON mode on Anthropic)
+- Feature limitations
+
 ## Protocol Conversion
 
 The gateway automatically converts between protocols:
@@ -376,13 +543,50 @@ The gateway automatically converts between protocols:
 | Role names | `assistant` | `assistant` | `model` | ✅ Mapped |
 | max_tokens | Optional | Required | Optional | ✅ Default: 4096 |
 | temperature | 0-2 | 0-1 | 0-2 | ✅ Clipped |
+| Content blocks | String or array | String or array | Parts array | ✅ Converted |
+| Tools | OpenAI format | Anthropic format | Function declarations | ✅ Converted |
+| Images | URL or base64 | Base64 only | Base64 only | ✅ Auto-converted |
+
+## Examples
+
+The repository includes comprehensive examples demonstrating all major features:
+
+```bash
+# Vision/image support
+cargo run --example vision_example
+
+# Tool/function calling
+cargo run --example tool_calling_example
+
+# JSON mode and structured outputs
+cargo run --example json_mode_example
+
+# Prompt caching for cost optimization
+cargo run --example caching_example
+```
+
+Each example includes:
+- Working code with detailed comments
+- Multiple use cases per feature
+- Provider-specific notes
+- Cost optimization strategies
 
 ## Development
 
 ### Running Tests
 
 ```bash
+# Unit tests
 cargo test
+
+# Integration tests
+cargo test --test '*'
+
+# Specific feature tests
+cargo test --test multimodal_tests
+cargo test --test tool_calling_tests
+cargo test --test json_mode_tests
+cargo test --test caching_tests
 ```
 
 ### Building Release Binary
@@ -390,6 +594,11 @@ cargo test
 ```bash
 cargo build --release
 ```
+
+For more documentation:
+- **[FEATURES.md](docs/FEATURES.md)** - Comprehensive feature documentation
+- **[CONVERSION_LIMITATIONS.md](docs/CONVERSION_LIMITATIONS.md)** - Provider conversion trade-offs
+- **[PHASES_COMPLETE.md](PHASES_COMPLETE.md)** - Implementation status and summary
 
 ## Configuration
 

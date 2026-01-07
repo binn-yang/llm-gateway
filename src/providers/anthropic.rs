@@ -52,16 +52,17 @@ mod tests {
             api_version: "2023-06-01".to_string(),
             priority: 1,
             failure_timeout_seconds: 60,
+            cache: crate::config::CacheConfig::default(),
         }
     }
 
     fn create_test_request() -> MessagesRequest {
         MessagesRequest {
             model: "claude-3-5-sonnet-20241022".to_string(),
-            system: Some("You are helpful".to_string()),
+            system: Some(crate::models::anthropic::MessageContent::Text("You are helpful".to_string())),
             messages: vec![Message {
                 role: "user".to_string(),
-                content: "Hello!".to_string(),
+                content: crate::models::anthropic::MessageContent::Text("Hello!".to_string()),
             }],
             max_tokens: 1024,
             temperature: Some(0.7),
@@ -71,12 +72,14 @@ mod tests {
             stop_sequences: None,
             tools: None,
             tool_choice: None,
+            thinking: None,
+            metadata: None,
         }
     }
 
     #[tokio::test]
     async fn test_create_message_request_format() {
-        let config = create_test_config();
+        let _config = create_test_config();
         let request = create_test_request();
 
         // Verify serialization works

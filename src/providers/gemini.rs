@@ -68,18 +68,21 @@ mod tests {
         GenerateContentRequest {
             contents: vec![Content {
                 role: "user".to_string(),
-                parts: vec![Part {
+                parts: vec![Part::Text {
                     text: "Hello!".to_string(),
                 }],
             }],
             system_instruction: None,
             generation_config: None,
+            safety_settings: None,
+            tools: None,
+            tool_config: None,
         }
     }
 
     #[tokio::test]
     async fn test_generate_content_request_format() {
-        let config = create_test_config();
+        let _config = create_test_config();
         let request = create_test_request();
 
         // Verify serialization works

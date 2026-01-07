@@ -152,7 +152,7 @@ async fn handle_anthropic_request(
     start: Instant,
 ) -> Result<Response, AppError> {
     // Convert OpenAI request to Anthropic format
-    let mut anthropic_request = converters::openai_to_anthropic::convert_request(&openai_request)?;
+    let (mut anthropic_request, conversion_warnings) = converters::openai_to_anthropic::convert_request(&openai_request).await?;
 
     // Pass through the original model name
     anthropic_request.model = model.to_string();
@@ -176,13 +176,16 @@ async fn handle_anthropic_request(
         &auth.api_key_name,
         |instance| {
             let http_client = http_client.clone();
-            let anthropic_request = anthropic_request.clone();
+            let mut anthropic_request = anthropic_request.clone();
             async move {
                 // Extract config from the instance
                 let config = match &instance.config {
                     crate::load_balancer::ProviderInstanceConfigEnum::Anthropic(cfg) => cfg.as_ref(),
                     _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
                 };
+
+                // Apply automatic caching based on configuration
+                converters::openai_to_anthropic::apply_auto_caching(&mut anthropic_request, &config.cache);
 
                 // Call Anthropic API
                 providers::anthropic::create_message(&http_client, config, anthropic_request).await
@@ -194,8 +197,17 @@ async fn handle_anthropic_request(
     if is_stream {
         // Stream response and convert back to OpenAI format
         tracing::debug!("Streaming response from Anthropic");
-        let sse_stream = streaming::create_anthropic_sse_stream(response);
-        Ok(sse_stream.into_response())
+        let mut response = streaming::create_anthropic_sse_stream(response).into_response();
+
+        // Add warnings header if present
+        if let Some(warnings_json) = conversion_warnings.to_header_value() {
+            response.headers_mut().insert(
+                axum::http::HeaderName::from_static("x-llm-gateway-warnings"),
+                axum::http::HeaderValue::from_str(&warnings_json).unwrap_or_else(|_| axum::http::HeaderValue::from_static("[]"))
+            );
+        }
+
+        Ok(response)
     } else {
         // Non-streaming response
         let anthropic_body: crate::models::anthropic::MessagesResponse = response.json().await?;
@@ -225,7 +237,17 @@ async fn handle_anthropic_request(
             "Completed chat completion request via Anthropic"
         );
 
-        Ok(Json(openai_body).into_response())
+        let mut response = Json(openai_body).into_response();
+
+        // Add warnings header if present
+        if let Some(warnings_json) = conversion_warnings.to_header_value() {
+            response.headers_mut().insert(
+                axum::http::HeaderName::from_static("x-llm-gateway-warnings"),
+                axum::http::HeaderValue::from_str(&warnings_json).unwrap_or_else(|_| axum::http::HeaderValue::from_static("[]"))
+            );
+        }
+
+        Ok(response)
     }
 }
 
@@ -238,7 +260,7 @@ async fn handle_gemini_request(
     start: Instant,
 ) -> Result<Response, AppError> {
     // Convert OpenAI request to Gemini format
-    let gemini_request = converters::openai_to_gemini::convert_request(&openai_request)?;
+    let (gemini_request, conversion_warnings) = converters::openai_to_gemini::convert_request(&openai_request).await?;
 
     tracing::debug!(
         model = %model,
@@ -286,10 +308,17 @@ async fn handle_gemini_request(
     if is_stream {
         // Stream response and convert back to OpenAI format
         tracing::debug!("Streaming response from Gemini");
-        // TODO: Implement Gemini SSE stream conversion (Phase 6 if needed)
-        Err(AppError::InternalError(
-            "Gemini streaming not yet implemented".to_string(),
-        ))
+        let mut response = streaming::create_gemini_sse_stream(response).into_response();
+
+        // Add warnings header if present
+        if let Some(warnings_json) = conversion_warnings.to_header_value() {
+            response.headers_mut().insert(
+                axum::http::HeaderName::from_static("x-llm-gateway-warnings"),
+                axum::http::HeaderValue::from_str(&warnings_json).unwrap_or_else(|_| axum::http::HeaderValue::from_static("[]"))
+            );
+        }
+
+        Ok(response)
     } else {
         // Non-streaming response
         let gemini_body: crate::models::gemini::GenerateContentResponse = response.json().await?;
@@ -319,7 +348,17 @@ async fn handle_gemini_request(
             "Completed chat completion request via Gemini"
         );
 
-        Ok(Json(openai_body).into_response())
+        let mut response = Json(openai_body).into_response();
+
+        // Add warnings header if present
+        if let Some(warnings_json) = conversion_warnings.to_header_value() {
+            response.headers_mut().insert(
+                axum::http::HeaderName::from_static("x-llm-gateway-warnings"),
+                axum::http::HeaderValue::from_str(&warnings_json).unwrap_or_else(|_| axum::http::HeaderValue::from_static("[]"))
+            );
+        }
+
+        Ok(response)
     }
 }
 
@@ -379,6 +418,7 @@ mod tests {
                     api_version: "2023-06-01".to_string(),
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    cache: crate::config::CacheConfig::default(),
                 }],
                 gemini: vec![ProviderInstanceConfig {
                     name: "gemini-test".to_string(),

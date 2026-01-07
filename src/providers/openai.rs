@@ -58,8 +58,9 @@ mod tests {
             model: "gpt-4".to_string(),
             messages: vec![ChatMessage {
                 role: "user".to_string(),
-                content: "Hello!".to_string(),
+                content: crate::models::openai::MessageContent::Text("Hello!".to_string()),
                 name: None,
+                tool_calls: None,
             }],
             max_tokens: Some(10),
             temperature: Some(0.7),
@@ -70,6 +71,14 @@ mod tests {
             presence_penalty: None,
             frequency_penalty: None,
             user: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            seed: None,
+            logprobs: None,
+            top_logprobs: None,
+            logit_bias: None,
+            service_tier: None,
         }
     }
 
@@ -77,7 +86,7 @@ mod tests {
     async fn test_chat_completions_request_format() {
         // This test verifies the request is properly formatted
         // We can't actually call the API without a valid key, but we can test the structure
-        let config = create_test_config();
+        let _config = create_test_config();
         let request = create_test_request();
 
         // Verify serialization works

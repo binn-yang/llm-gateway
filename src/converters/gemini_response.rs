@@ -1,8 +1,11 @@
 use crate::{
     error::AppError,
     models::{
-        gemini::GenerateContentResponse,
-        openai::{ChatChoice, ChatCompletionResponse, ChatMessage, Usage},
+        gemini::{GenerateContentResponse, Part},
+        openai::{
+            ChatChoice, ChatCompletionResponse, ChatMessage, FunctionCall, MessageContent,
+            ToolCall, Usage,
+        },
     },
 };
 
@@ -22,13 +25,9 @@ pub fn convert_response(
             AppError::ConversionError("No candidates in Gemini response".to_string())
         })?;
 
-    // Extract text from first part
-    let content = candidate
-        .content
-        .parts
-        .first()
-        .map(|part| part.text.clone())
-        .unwrap_or_default();
+    // Extract text and tool calls from parts
+    let content = extract_text_from_parts(&candidate.content.parts);
+    let tool_calls = extract_tool_calls_from_parts(&candidate.content.parts);
 
     // Map finish reason
     let finish_reason = candidate.finish_reason.as_ref().map(|reason| {
@@ -60,13 +59,56 @@ pub fn convert_response(
             index: 0,
             message: ChatMessage {
                 role: "assistant".to_string(),
-                content,
+                content: MessageContent::Text(content),
                 name: None,
+                tool_calls: if tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(tool_calls)
+                },
             },
             finish_reason,
+            logprobs: None, // Gemini doesn't provide log probabilities
         }],
         usage,
     })
+}
+
+/// Extract text from Gemini Parts (handling the Part enum)
+fn extract_text_from_parts(parts: &[Part]) -> String {
+    parts
+        .iter()
+        .filter_map(|part| {
+            if let Part::Text { text } = part {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// Extract tool calls from Gemini Parts
+fn extract_tool_calls_from_parts(parts: &[Part]) -> Vec<ToolCall> {
+    parts
+        .iter()
+        .filter_map(|part| {
+            if let Part::FunctionCall { function_call } = part {
+                Some(ToolCall {
+                    id: format!("call_{}", uuid::Uuid::new_v4()),
+                    tool_type: "function".to_string(),
+                    function: FunctionCall {
+                        name: function_call.name.clone(),
+                        arguments: serde_json::to_string(&function_call.args)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    },
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -80,7 +122,7 @@ mod tests {
             candidates: vec![Candidate {
                 content: Content {
                     role: "model".to_string(),
-                    parts: vec![Part {
+                    parts: vec![Part::Text {
                         text: "Hello! How can I help you?".to_string(),
                     }],
                 },
@@ -100,7 +142,7 @@ mod tests {
         assert_eq!(openai_resp.model, "gemini-1.5-pro");
         assert_eq!(openai_resp.choices[0].message.role, "assistant");
         assert_eq!(
-            openai_resp.choices[0].message.content,
+            openai_resp.choices[0].message.content.extract_text(),
             "Hello! How can I help you?"
         );
         assert_eq!(openai_resp.choices[0].finish_reason, Some("stop".to_string()));
@@ -114,7 +156,7 @@ mod tests {
             candidates: vec![Candidate {
                 content: Content {
                     role: "model".to_string(),
-                    parts: vec![Part {
+                    parts: vec![Part::Text {
                         text: "Text".to_string(),
                     }],
                 },

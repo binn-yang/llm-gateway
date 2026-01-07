@@ -22,9 +22,32 @@ pub use crate::handlers::chat_completions::AppState;
 pub async fn handle_messages(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthInfo>,
-    Json(request): Json<MessagesRequest>,
+    Json(raw_request): Json<serde_json::Value>,
 ) -> Result<Response, AppError> {
     let start = Instant::now();
+
+    // 尝试反序列化，记录错误详情
+    let request: MessagesRequest = match serde_json::from_value(raw_request.clone()) {
+        Ok(req) => req,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                request_sample = ?serde_json::to_string(&raw_request).ok().map(|s| {
+                    if s.len() > 500 {
+                        format!("{}...", &s[..500])
+                    } else {
+                        s
+                    }
+                }),
+                "Failed to deserialize MessagesRequest"
+            );
+            return Err(AppError::ConversionError(format!(
+                "Failed to deserialize request: {}",
+                e
+            )));
+        }
+    };
+
     let model = request.model.clone();
     let is_stream = request.stream.unwrap_or(false);
 
@@ -51,7 +74,7 @@ pub async fn handle_messages(
         "/v1/messages",
     );
 
-    // 3. 透传原始模型名
+    // 3. 透传原始模型名（thinking 字段已改为 Value，原样转发）
     let anthropic_request = request;
 
     // 4. Get LoadBalancer for Anthropic provider

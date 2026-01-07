@@ -1,6 +1,8 @@
 use crate::{
     converters,
-    models::{anthropic::StreamEvent, openai::ChatCompletionChunk},
+    models::{
+        anthropic::StreamEvent, gemini::GenerateContentResponse, openai::ChatCompletionChunk,
+    },
 };
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::stream::{Stream, StreamExt};
@@ -105,6 +107,76 @@ pub fn create_anthropic_sse_stream(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+/// Convert Gemini SSE stream to OpenAI SSE stream
+/// Gemini sends JSON objects in SSE format, each containing incremental content
+pub fn create_gemini_sse_stream(
+    response: reqwest::Response,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let request_id_clone = request_id.clone();
+
+    // Shared state to track if this is the first chunk (for sending role)
+    let is_first_chunk = std::sync::Arc::new(std::sync::Mutex::new(true));
+
+    let stream = response.bytes_stream().flat_map(move |chunk_result| {
+        let request_id = request_id_clone.clone();
+        let is_first_chunk = is_first_chunk.clone();
+
+        futures::stream::iter(match chunk_result {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                let mut events = Vec::new();
+
+                // Parse SSE events (Gemini format: "data: {...}\n\n")
+                for line in text.lines() {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        // Try to parse as Gemini chunk
+                        if let Ok(gemini_chunk) =
+                            serde_json::from_str::<GenerateContentResponse>(data)
+                        {
+                            // Convert to OpenAI chunk
+                            let mut is_first = is_first_chunk.lock().unwrap();
+                            match converters::gemini_streaming::convert_streaming_chunk(
+                                &gemini_chunk,
+                                &request_id,
+                                &mut is_first,
+                            ) {
+                                Ok(Some(openai_chunk)) => {
+                                    // Serialize to JSON
+                                    if let Ok(json) = serde_json::to_string(&openai_chunk) {
+                                        events.push(Ok(Event::default().data(json)));
+                                    }
+
+                                    // Check for finish_reason to send [DONE]
+                                    if openai_chunk.choices[0].finish_reason.is_some() {
+                                        events.push(Ok(Event::default().data("[DONE]")));
+                                    }
+                                }
+                                Ok(None) => {
+                                    // Empty chunk, skip
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to convert Gemini chunk: {}", e);
+                                }
+                            }
+                        } else {
+                            tracing::warn!("Failed to parse Gemini chunk: {}", data);
+                        }
+                    }
+                }
+
+                events
+            }
+            Err(e) => {
+                tracing::error!("Gemini stream error: {}", e);
+                vec![Ok(Event::default().data(""))]
+            }
+        })
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +194,7 @@ mod tests {
                 delta: Delta {
                     role: None,
                     content: None,
+                    tool_calls: None,
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -150,6 +223,7 @@ mod tests {
                 delta: Delta {
                     role: Some("assistant".to_string()),
                     content: Some("Hello".to_string()),
+                    tool_calls: None,
                 },
                 finish_reason: None,
             }],

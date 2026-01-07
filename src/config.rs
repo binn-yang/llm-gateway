@@ -79,6 +79,48 @@ pub struct AnthropicInstanceConfig {
 
     #[serde(default = "default_failure_timeout")]
     pub failure_timeout_seconds: u64,
+
+    /// Prompt caching configuration
+    #[serde(default)]
+    pub cache: CacheConfig,
+}
+
+/// Prompt caching configuration for Anthropic
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CacheConfig {
+    /// Enable auto-caching for system prompts
+    #[serde(default = "default_auto_cache_system")]
+    pub auto_cache_system: bool,
+
+    /// Minimum system prompt tokens to trigger caching
+    #[serde(default = "default_min_system_tokens")]
+    pub min_system_tokens: u64,
+
+    /// Enable auto-caching for tool definitions
+    #[serde(default = "default_auto_cache_tools")]
+    pub auto_cache_tools: bool,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            auto_cache_system: default_auto_cache_system(),
+            min_system_tokens: default_min_system_tokens(),
+            auto_cache_tools: default_auto_cache_tools(),
+        }
+    }
+}
+
+fn default_auto_cache_system() -> bool {
+    true
+}
+
+fn default_min_system_tokens() -> u64 {
+    1024
+}
+
+fn default_auto_cache_tools() -> bool {
+    true
 }
 
 fn default_priority() -> u32 {
@@ -338,6 +380,7 @@ mod tests {
                     api_version: "2023-06-01".to_string(),
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    cache: CacheConfig::default(),
                 }],
                 gemini: vec![],
             },

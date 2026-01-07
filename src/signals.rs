@@ -202,6 +202,7 @@ mod tests {
                     api_version: "2023-06-01".to_string(),
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    cache: crate::config::CacheConfig::default(),
                 }],
                 gemini: vec![ProviderInstanceConfig {
                     name: "gemini-test".to_string(),

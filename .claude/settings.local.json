@@ -26,7 +26,15 @@
       "Bash(OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES ./target/release/llm-gateway start:*)",
       "Bash(./target/release/llm-gateway reload:*)",
       "Bash(./target/release/llm-gateway stop:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(./target/release/llm-gateway stats:*)",
+      "Bash(./target/release/llm-gateway config:*)",
+      "Bash(./target/release/llm-gateway test:*)",
+      "Bash(cargo --list:*)",
+      "Bash(kill:*)",
+      "Bash(cargo check:*)",
+      "Bash(grep:*)",
+      "Bash(OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES RUST_LOG=debug ./target/release/llm-gateway:*)"
     ]
   }
 }
