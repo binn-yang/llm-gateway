@@ -110,7 +110,8 @@ mod tests {
         let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(config)));
         let router = Arc::new(ModelRouter::new(config.clone()));
         let http_client = reqwest::Client::new();
-        let load_balancers = Arc::new(HashMap::new());
+        let empty_lb: std::collections::HashMap<crate::router::Provider, Arc<crate::load_balancer::LoadBalancer>> = std::collections::HashMap::new();
+        let load_balancers = Arc::new(arc_swap::ArcSwap::from_pointee(empty_lb));
 
         AppState {
             config,

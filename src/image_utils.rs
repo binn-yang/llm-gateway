@@ -70,16 +70,16 @@ pub async fn fetch_image_as_base64(url: &str) -> Result<(String, String), AppErr
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|e| AppError::HttpClientError(format!("Failed to create HTTP client: {}", e)))?;
+        .map_err(AppError::HttpRequest)?;
 
     let response = client
         .get(url)
         .send()
         .await
-        .map_err(|e| AppError::HttpClientError(format!("Failed to fetch image: {}", e)))?;
+        .map_err(AppError::HttpRequest)?;
 
     if !response.status().is_success() {
-        return Err(AppError::HttpClientError(format!(
+        return Err(AppError::ConversionError(format!(
             "Image fetch failed with status: {}",
             response.status()
         )));
@@ -120,7 +120,7 @@ pub async fn fetch_image_as_base64(url: &str) -> Result<(String, String), AppErr
     let bytes = response
         .bytes()
         .await
-        .map_err(|e| AppError::HttpClientError(format!("Failed to read image data: {}", e)))?;
+        .map_err(AppError::HttpRequest)?;
 
     // Validate size again (double-check actual size)
     validate_image_size(&bytes, &mime_type)?;

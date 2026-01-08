@@ -31,16 +31,16 @@ pub async fn start_server(config: Config) -> Result<()> {
     // Wrap config in ArcSwap for atomic reload support
     let config_swap = Arc::new(ArcSwap::from_pointee(config.clone()));
 
+    // Build load balancers for each provider type and wrap in ArcSwap for reload
+    let load_balancers = Arc::new(arc_swap::ArcSwap::from_pointee((*build_load_balancers(&config)).clone()));
+
     // Setup signal handlers (SIGTERM, SIGINT for shutdown; SIGHUP for reload)
-    let (shutdown_tx, signal_handle) = setup_signal_handlers(config_swap.clone());
+    let (shutdown_tx, signal_handle) = setup_signal_handlers(config_swap.clone(), load_balancers.clone());
     let mut shutdown_rx = shutdown_tx.subscribe();
 
     // Create shared state
     let router = Arc::new(ModelRouter::new(config_swap.clone()));
     let http_client = reqwest::Client::new();
-
-    // Build load balancers for each provider type
-    let load_balancers = build_load_balancers(&config);
 
     let app_state = handlers::chat_completions::AppState {
         config: config_swap.clone(),
@@ -123,7 +123,7 @@ fn create_router(
 }
 
 /// Build load balancers for each provider type
-fn build_load_balancers(config: &Config) -> Arc<HashMap<Provider, Arc<LoadBalancer>>> {
+pub fn build_load_balancers(config: &Config) -> Arc<HashMap<Provider, Arc<LoadBalancer>>> {
     let mut load_balancers = HashMap::new();
 
     // OpenAI load balancer
@@ -345,7 +345,7 @@ mod tests {
         let config_swap = Arc::new(ArcSwap::from_pointee(config.clone()));
         let router = Arc::new(ModelRouter::new(config_swap.clone()));
         let http_client = reqwest::Client::new();
-        let load_balancers = build_load_balancers(&config);
+        let load_balancers = Arc::new(arc_swap::ArcSwap::from_pointee((*build_load_balancers(&config)).clone()));
 
         let app_state = handlers::chat_completions::AppState {
             config: config_swap.clone(),

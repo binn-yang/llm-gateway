@@ -247,6 +247,18 @@ impl LoadBalancer {
         &self.provider_name
     }
 
+    /// Get the count of healthy and enabled instances
+    pub async fn healthy_instance_count(&self) -> usize {
+        let health = self.health_state.read().await;
+        self.instances.iter()
+            .filter(|inst| {
+                inst.config.enabled() &&
+                health.instances.get(inst.name.as_ref())
+                    .map_or(false, |h| h.is_healthy)
+            })
+            .count()
+    }
+
     /// Mark instance failure (single failure marks unhealthy)
     pub async fn mark_instance_failure(&self, instance_name: &str) {
         let mut health = self.health_state.write().await;

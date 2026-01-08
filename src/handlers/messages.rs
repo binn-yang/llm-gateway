@@ -78,10 +78,11 @@ pub async fn handle_messages(
     let anthropic_request = request;
 
     // 4. Get LoadBalancer for Anthropic provider
-    let load_balancer = state
-        .load_balancers
+    let load_balancers_map = state.load_balancers.load();
+    let load_balancer = load_balancers_map
         .get(&crate::router::Provider::Anthropic)
-        .ok_or_else(|| AppError::ProviderDisabled("Anthropic provider not configured".to_string()))?;
+        .ok_or_else(|| AppError::ProviderDisabled("Anthropic provider not configured".to_string()))?
+        .clone();
 
     // 5. Execute request with sticky session
     let http_client = state.http_client.clone();

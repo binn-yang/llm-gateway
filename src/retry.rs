@@ -110,9 +110,6 @@ pub fn is_instance_failure(error: &AppError) -> bool {
             )
         }
 
-        // HTTP client errors (generic string) - treat as potential instance failure
-        AppError::HttpClientError(_) => true,
-
         // These are NOT instance failures - they're business/client errors
         AppError::Unauthorized(_) => false,
         AppError::ModelNotFound(_) => false,
@@ -185,11 +182,5 @@ mod tests {
         assert!(!is_instance_failure(&AppError::Unauthorized("Invalid API key".to_string())));
         assert!(!is_instance_failure(&AppError::ModelNotFound("gpt-5".to_string())));
         assert!(!is_instance_failure(&AppError::ConversionError("Invalid format".to_string())));
-    }
-
-    #[test]
-    fn test_is_instance_failure_http_client_error() {
-        // Generic HTTP client errors are treated as potential instance failures
-        assert!(is_instance_failure(&AppError::HttpClientError("Connection failed".to_string())));
     }
 }

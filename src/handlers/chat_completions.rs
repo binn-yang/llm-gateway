@@ -24,7 +24,7 @@ pub struct AppState {
     pub config: Arc<arc_swap::ArcSwap<crate::config::Config>>,
     pub router: Arc<ModelRouter>,
     pub http_client: reqwest::Client,
-    pub load_balancers: Arc<HashMap<Provider, Arc<LoadBalancer>>>,
+    pub load_balancers: Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<LoadBalancer>>>>,
 }
 
 /// Handle /v1/chat/completions endpoint
@@ -86,10 +86,11 @@ async fn handle_openai_request(
     start: Instant,
 ) -> Result<Response, AppError> {
     // Get LoadBalancer for OpenAI provider
-    let load_balancer = state
-        .load_balancers
+    let load_balancers_map = state.load_balancers.load();
+    let load_balancer = load_balancers_map
         .get(&crate::router::Provider::OpenAI)
-        .ok_or_else(|| AppError::ProviderDisabled("OpenAI provider not configured".to_string()))?;
+        .ok_or_else(|| AppError::ProviderDisabled("OpenAI provider not configured".to_string()))?
+        .clone();
 
     // Execute request with sticky session
     let request_clone = request.clone();
@@ -164,10 +165,11 @@ async fn handle_anthropic_request(
     );
 
     // Get LoadBalancer for Anthropic provider
-    let load_balancer = state
-        .load_balancers
+    let load_balancers_map = state.load_balancers.load();
+    let load_balancer = load_balancers_map
         .get(&crate::router::Provider::Anthropic)
-        .ok_or_else(|| AppError::ProviderDisabled("Anthropic provider not configured".to_string()))?;
+        .ok_or_else(|| AppError::ProviderDisabled("Anthropic provider not configured".to_string()))?
+        .clone();
 
     // Execute request with sticky session
     let http_client = state.http_client.clone();
@@ -269,10 +271,11 @@ async fn handle_gemini_request(
     );
 
     // Get LoadBalancer for Gemini provider
-    let load_balancer = state
-        .load_balancers
+    let load_balancers_map = state.load_balancers.load();
+    let load_balancer = load_balancers_map
         .get(&crate::router::Provider::Gemini)
-        .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?;
+        .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?
+        .clone();
 
     // Execute request with sticky session
     let http_client = state.http_client.clone();
@@ -440,7 +443,8 @@ mod tests {
         let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(config)));
         let router = Arc::new(ModelRouter::new(config.clone()));
         let http_client = reqwest::Client::new();
-        let load_balancers = Arc::new(HashMap::new());
+        let empty_lb: std::collections::HashMap<crate::router::Provider, Arc<crate::load_balancer::LoadBalancer>> = std::collections::HashMap::new();
+        let load_balancers = Arc::new(arc_swap::ArcSwap::from_pointee(empty_lb));
 
         AppState {
             config,

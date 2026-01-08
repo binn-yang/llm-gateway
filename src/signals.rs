@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
 use arc_swap::ArcSwap;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{error, info};
@@ -10,6 +11,7 @@ use nix::libc;
 use tokio::signal::unix::{signal, SignalKind};
 
 use crate::config::Config;
+use crate::router::Provider;
 
 /// Shutdown signal types
 #[derive(Debug, Clone, Copy)]
@@ -28,6 +30,7 @@ pub enum ShutdownSignal {
 #[cfg(unix)]
 pub fn setup_signal_handlers(
     config: Arc<ArcSwap<Config>>,
+    load_balancers: Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<crate::load_balancer::LoadBalancer>>>>,
 ) -> (
     broadcast::Sender<ShutdownSignal>,
     tokio::task::JoinHandle<()>,
@@ -54,7 +57,7 @@ pub fn setup_signal_handlers(
                 }
                 _ = sighup.recv() => {
                     info!("SIGHUP received, reloading configuration");
-                    if let Err(e) = reload_config(config.clone()).await {
+                    if let Err(e) = reload_config(config.clone(), &load_balancers).await {
                         error!("Failed to reload configuration: {}", e);
                     } else {
                         info!("Configuration reloaded successfully");
@@ -71,6 +74,7 @@ pub fn setup_signal_handlers(
 #[cfg(not(unix))]
 pub fn setup_signal_handlers(
     _config: Arc<ArcSwap<Config>>,
+    _load_balancers: Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<crate::load_balancer::LoadBalancer>>>>,
 ) -> (
     broadcast::Sender<ShutdownSignal>,
     tokio::task::JoinHandle<()>,
@@ -94,14 +98,18 @@ pub fn setup_signal_handlers(
     (shutdown_tx, handle)
 }
 
-/// Reload configuration atomically
+/// Reload configuration atomically with load balancer rebuild
 ///
-/// This loads a new configuration and atomically swaps it with the current one
-/// If loading fails, the old configuration remains in place
-async fn reload_config(config: Arc<ArcSwap<Config>>) -> Result<()> {
+/// This loads a new configuration, validates it, rebuilds load balancers,
+/// and atomically swaps both config and load balancers.
+/// If any step fails, the old configuration remains in place.
+async fn reload_config(
+    config: Arc<ArcSwap<Config>>,
+    load_balancers: &Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<crate::load_balancer::LoadBalancer>>>>,
+) -> Result<()> {
     info!("Loading new configuration...");
 
-    // Load new config
+    // Phase 1: Load and validate new config
     let new_config = crate::config::load_config()?;
 
     info!(
@@ -112,10 +120,30 @@ async fn reload_config(config: Arc<ArcSwap<Config>>) -> Result<()> {
         new_config.api_keys.len()
     );
 
-    // Atomic swap - all readers will see the new config immediately
-    config.store(Arc::new(new_config));
+    // Phase 2: Build new load balancers from new config
+    info!("Building new load balancers...");
+    let new_load_balancers = (*crate::server::build_load_balancers(&new_config)).clone();
 
-    info!("Configuration swap completed");
+    // Phase 3: Validate that each provider has at least one healthy instance
+    for (provider, load_balancer) in new_load_balancers.iter() {
+        let healthy_count = load_balancer.healthy_instance_count().await;
+        if healthy_count == 0 {
+            bail!(
+                "Rejecting reload: Provider {} has no healthy instances (all instances are disabled or unhealthy)",
+                provider
+            );
+        }
+        info!(
+            "Provider {} has {} healthy instance(s)",
+            provider, healthy_count
+        );
+    }
+
+    // Phase 4: Atomic swap - both config and load balancers are updated together
+    config.store(Arc::new(new_config));
+    load_balancers.store(Arc::new(new_load_balancers));
+
+    info!("Configuration and load balancers swapped atomically");
     Ok(())
 }
 
@@ -225,7 +253,8 @@ mod tests {
     #[tokio::test]
     async fn test_setup_signal_handlers() {
         let config = Arc::new(ArcSwap::from_pointee(create_test_config()));
-        let (shutdown_tx, _handle) = setup_signal_handlers(config);
+        let load_balancers = Arc::new(arc_swap::ArcSwap::from_pointee(std::collections::HashMap::new()));
+        let (shutdown_tx, _handle) = setup_signal_handlers(config, load_balancers);
 
         // Should be able to subscribe to shutdown signals
         let mut rx = shutdown_tx.subscribe();

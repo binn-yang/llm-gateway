@@ -19,8 +19,6 @@ pub enum AppError {
     ProviderDisabled(String),
     /// Protocol conversion error
     ConversionError(String),
-    /// HTTP client error
-    HttpClientError(String),
     /// Upstream API error
     UpstreamError { status: StatusCode, message: String },
     /// Internal server error
@@ -39,7 +37,6 @@ impl fmt::Display for AppError {
             Self::ModelNotFound(msg) => write!(f, "Model not found: {}", msg),
             Self::ProviderDisabled(msg) => write!(f, "Provider disabled: {}", msg),
             Self::ConversionError(msg) => write!(f, "Conversion error: {}", msg),
-            Self::HttpClientError(msg) => write!(f, "HTTP client error: {}", msg),
             Self::UpstreamError { status, message } => {
                 write!(f, "Upstream error ({}): {}", status, message)
             }
@@ -60,7 +57,6 @@ impl IntoResponse for AppError {
             Self::ModelNotFound(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             Self::ProviderDisabled(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
             Self::ConversionError(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
-            Self::HttpClientError(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
             Self::UpstreamError { status, message } => (*status, message.clone()),
             Self::InternalError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             Self::NoHealthyInstances(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
@@ -85,7 +81,6 @@ fn error_type_name(error: &AppError) -> &'static str {
         AppError::ModelNotFound(_) => "model_not_found",
         AppError::ProviderDisabled(_) => "provider_disabled",
         AppError::ConversionError(_) => "conversion_error",
-        AppError::HttpClientError(_) => "http_client_error",
         AppError::UpstreamError { .. } => "upstream_error",
         AppError::InternalError(_) => "internal_error",
         AppError::NoHealthyInstances(_) => "no_healthy_instances",
@@ -102,7 +97,7 @@ impl From<anyhow::Error> for AppError {
 
 impl From<reqwest::Error> for AppError {
     fn from(err: reqwest::Error) -> Self {
-        Self::HttpClientError(err.to_string())
+        Self::HttpRequest(err)
     }
 }
 
