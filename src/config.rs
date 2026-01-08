@@ -63,6 +63,11 @@ pub struct ProviderInstanceConfig {
 
     #[serde(default = "default_failure_timeout")]
     pub failure_timeout_seconds: u64,
+
+    /// Weight for weighted random selection (default: 100)
+    /// Higher weight = more likely to be selected
+    #[serde(default = "default_weight")]
+    pub weight: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -79,6 +84,11 @@ pub struct AnthropicInstanceConfig {
 
     #[serde(default = "default_failure_timeout")]
     pub failure_timeout_seconds: u64,
+
+    /// Weight for weighted random selection (default: 100)
+    /// Higher weight = more likely to be selected
+    #[serde(default = "default_weight")]
+    pub weight: u32,
 
     /// Prompt caching configuration
     #[serde(default)]
@@ -129,6 +139,10 @@ fn default_priority() -> u32 {
 
 fn default_failure_timeout() -> u64 {
     60
+}
+
+fn default_weight() -> u32 {
+    100
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -328,6 +342,7 @@ mod tests {
             timeout_seconds: 300,
             priority: 2,
             failure_timeout_seconds: 60,
+            weight: 100,
         });
 
         let result = validate_config(&cfg);
@@ -370,6 +385,7 @@ mod tests {
                     timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    weight: 100,
                 }],
                 anthropic: vec![AnthropicInstanceConfig {
                     name: "anthropic-primary".to_string(),
@@ -380,6 +396,7 @@ mod tests {
                     api_version: "2023-06-01".to_string(),
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    weight: 100,
                     cache: CacheConfig::default(),
                 }],
                 gemini: vec![],

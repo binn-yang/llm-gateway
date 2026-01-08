@@ -78,6 +78,7 @@ mod tests {
                     timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    weight: 100,
                 }],
                 anthropic: vec![AnthropicInstanceConfig {
                     name: "anthropic-test".to_string(),
@@ -88,6 +89,7 @@ mod tests {
                     api_version: "2023-06-01".to_string(),
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    weight: 100,
                     cache: crate::config::CacheConfig::default(),
                 }],
                 gemini: vec![ProviderInstanceConfig {
@@ -98,6 +100,7 @@ mod tests {
                     timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    weight: 100,
                 }],
             },
             metrics: MetricsConfig {

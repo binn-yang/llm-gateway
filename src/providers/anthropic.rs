@@ -52,6 +52,7 @@ mod tests {
             api_version: "2023-06-01".to_string(),
             priority: 1,
             failure_timeout_seconds: 60,
+            weight: 100,
             cache: crate::config::CacheConfig::default(),
         }
     }

@@ -1,10 +1,50 @@
 use crate::config::{AnthropicInstanceConfig, ProviderInstanceConfig};
 use dashmap::DashMap;
 use rand::seq::SliceRandom;
+use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+
+// ============================================================
+// Helper Functions
+// ============================================================
+
+/// Select an instance using weighted random selection
+/// Higher weight = higher probability of being selected
+fn select_by_weight(instances: &[&&ProviderInstance]) -> Option<ProviderInstance> {
+    if instances.is_empty() {
+        return None;
+    }
+
+    // Calculate total weight
+    let total_weight: u32 = instances.iter()
+        .map(|inst| inst.config.weight())
+        .sum();
+
+    if total_weight == 0 {
+        // Fallback to random selection if all weights are 0
+        let mut rng = rand::thread_rng();
+        return instances.choose(&mut rng).map(|&&inst| inst.clone());
+    }
+
+    // Generate random weight value
+    let mut rng = rand::thread_rng();
+    let mut random_weight = rng.gen_range(0..total_weight);
+
+    // Select instance based on weight
+    for &&inst in instances {
+        let weight = inst.config.weight();
+        if random_weight < weight {
+            return Some(inst.clone());
+        }
+        random_weight -= weight;
+    }
+
+    // Fallback (should not reach here if weights are valid)
+    instances.first().map(|&&inst| inst.clone())
+}
 
 // ============================================================
 // Data Structures
@@ -22,6 +62,9 @@ pub struct LoadBalancer {
 
     // Provider name for metrics
     provider_name: String,
+
+    // Optional HTTP client for active health checks
+    http_client: Option<reqwest::Client>,
 }
 
 /// Session information (simplified, no consecutive_failures)
@@ -76,6 +119,13 @@ impl ProviderInstanceConfigEnum {
         }
     }
 
+    pub fn weight(&self) -> u32 {
+        match self {
+            Self::Generic(c) => c.weight,
+            Self::Anthropic(c) => c.weight,
+        }
+    }
+
     pub fn api_key(&self) -> &str {
         match self {
             Self::Generic(c) => &c.api_key,
@@ -104,6 +154,14 @@ impl ProviderInstanceConfigEnum {
 
 impl LoadBalancer {
     pub fn new(provider_name: String, instances: Vec<ProviderInstance>) -> Self {
+        Self::with_client(provider_name, instances, None)
+    }
+
+    pub fn with_client(
+        provider_name: String,
+        instances: Vec<ProviderInstance>,
+        http_client: Option<reqwest::Client>,
+    ) -> Self {
         // Initialize health state
         let mut health_instances = HashMap::new();
         for inst in &instances {
@@ -126,6 +184,7 @@ impl LoadBalancer {
             })),
             instances: Arc::new(instances),
             provider_name,
+            http_client,
         }
     }
 
@@ -203,7 +262,7 @@ impl LoadBalancer {
         Some(instance)
     }
 
-    /// Select healthy instance by priority (lower priority number = higher priority, random among same priority)
+    /// Select healthy instance by priority (lower priority number = higher priority, weighted random among same priority)
     async fn select_healthy_instance_by_priority(&self) -> Option<ProviderInstance> {
         let health = self.health_state.read().await;
 
@@ -230,10 +289,18 @@ impl LoadBalancer {
             .filter(|inst| inst.config.priority() == min_priority)
             .collect();
 
-        // Random selection among same priority instances
-        let mut rng = rand::thread_rng();
-        top_priority.choose(&mut rng).map(|&&inst| inst.clone())
+        // Weighted random selection among same priority instances
+        select_by_weight(&top_priority)
     }
+
+    /// Get the total weight of instances
+    fn get_total_weight(&self) -> u32 {
+        self.instances.iter()
+            .map(|inst| inst.config.weight())
+            .sum()
+    }
+
+    /// Get the count of healthy and enabled instances
 
     /// Get instance by name
     fn get_instance_by_name(&self, name: &str) -> Option<ProviderInstance> {
@@ -302,7 +369,7 @@ impl LoadBalancer {
         }
     }
 
-    /// Health check recovery loop
+    /// Health check recovery loop with active health checking
     pub async fn health_recovery_loop(self: Arc<Self>) {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
 
@@ -322,19 +389,84 @@ impl LoadBalancer {
                             .unwrap_or(Duration::from_secs(60));
 
                         if now.duration_since(last_failure) >= timeout {
-                            inst_health.is_healthy = true;
+                            // Attempt active health check before marking as healthy
+                            let check_result = self.perform_active_health_check(name).await;
 
-                            // Update instance health metric to 1 (healthy)
-                            crate::metrics::update_instance_health(&self.provider_name, name, true);
+                            match check_result {
+                                Ok(()) => {
+                                    // Health check passed, mark as healthy
+                                    inst_health.is_healthy = true;
 
-                            tracing::info!(
-                                instance = name,
-                                timeout_seconds = timeout.as_secs(),
-                                "Instance auto-recovered after timeout"
-                            );
+                                    // Update instance health metric to 1 (healthy)
+                                    crate::metrics::update_instance_health(&self.provider_name, name, true);
+
+                                    tracing::info!(
+                                        instance = name,
+                                        timeout_seconds = timeout.as_secs(),
+                                        "Instance passed active health check and recovered"
+                                    );
+                                }
+                                Err(e) => {
+                                    // Health check failed, extend recovery time
+                                    inst_health.last_failure_time = Some(Instant::now());
+
+                                    tracing::warn!(
+                                        instance = name,
+                                        error = %e,
+                                        "Active health check failed, extending recovery time"
+                                    );
+                                }
+                            }
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// Perform active health check on an instance
+    ///
+    /// Sends a lightweight request to the instance to verify it's actually healthy.
+    /// Uses a short timeout to avoid blocking the recovery loop.
+    async fn perform_active_health_check(&self, instance_name: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Find the instance
+        let instance = self.instances.iter()
+            .find(|i| i.name.as_ref() == instance_name)
+            .ok_or_else(|| format!("Instance '{}' not found", instance_name))?;
+
+        // Only perform active health check if we have an HTTP client
+        let client = self.http_client.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No HTTP client configured for active health check"))?;
+
+        // Build health check URL (use /v1/models endpoint which is lightweight)
+        let base_url = instance.config.base_url();
+        let health_check_url = format!("{}/models", base_url.trim_end_matches('/'));
+
+        // Create a short-lived request with timeout
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),  // 5 second timeout for health check
+            client
+                .get(&health_check_url)
+                .header("Authorization", format!("Bearer {}", instance.config.api_key()))
+                .send()
+        ).await;
+
+        match response {
+            Ok(Ok(resp)) if resp.status().is_success() => {
+                // Health check passed
+                Ok(())
+            }
+            Ok(Ok(resp)) => {
+                // Non-success status code
+                Err(anyhow::anyhow!("Health check returned non-success status: {}", resp.status()).into())
+            }
+            Ok(Err(e)) => {
+                // Request error
+                Err(anyhow::anyhow!("Health check request failed: {}", e).into())
+            }
+            Err(_) => {
+                // Timeout
+                Err(anyhow::anyhow!("Health check timed out after 5 seconds").into())
             }
         }
     }
@@ -355,6 +487,7 @@ mod tests {
                 timeout_seconds: 60,
                 priority,
                 failure_timeout_seconds: 60,
+                weight: 100,
             })),
         }
     }

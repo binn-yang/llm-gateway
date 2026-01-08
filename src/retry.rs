@@ -1,35 +1,50 @@
 use crate::error::AppError;
 use crate::load_balancer::{LoadBalancer, ProviderInstance};
 use std::future::Future;
+use std::time::Duration;
+use tokio::time::timeout;
 
-/// Execute a request for a single API key with automatic failover detection
+/// Execute a request for a single API key name with automatic failover detection
 ///
 /// This function:
-/// 1. Selects a provider instance using sticky session for the given API key
+/// 1. Selects a provider instance using sticky session for the given API key name
 /// 2. Executes the request function with the selected instance
-/// 3. If the request fails with an instance-level failure, marks the instance as unhealthy
-/// 4. Returns the result (success or error)
+/// 3. Applies request-level timeout based on instance configuration
+/// 4. If the request fails with an instance-level failure, marks the instance as unhealthy
+/// 5. Returns the result (success or error)
 ///
 /// Note: This does NOT retry immediately. Instead, the next request from the same API key
 /// will automatically select a different healthy instance.
+///
+/// # Security
+/// The `api_key_name` parameter should be a friendly name (e.g., "my-app"), not the actual API key.
+/// Actual API keys are never logged.
 pub async fn execute_with_session<F, Fut, T>(
     load_balancer: &LoadBalancer,
-    api_key: &str,
+    api_key_name: &str,
     request_fn: F,
 ) -> Result<T, AppError>
 where
     F: Fn(ProviderInstance) -> Fut,
     Fut: Future<Output = Result<T, AppError>>,
 {
-    // Select instance for this API key (sticky session)
+    // Select instance for this API key name (sticky session)
     let instance = load_balancer
-        .select_instance_for_key(api_key)
+        .select_instance_for_key(api_key_name)
         .await
         .ok_or_else(|| AppError::NoHealthyInstances("No healthy instances available".to_string()))?;
 
-    // Execute the request
-    match request_fn(instance.clone()).await {
-        Ok(result) => {
+    // Get timeout from instance configuration
+    let timeout_duration = Duration::from_secs(instance.config.timeout_seconds());
+
+    // Execute the request with timeout
+    let request_result = timeout(
+        timeout_duration,
+        request_fn(instance.clone())
+    ).await;
+
+    match request_result {
+        Ok(Ok(result)) => {
             // Record successful instance request
             crate::metrics::record_instance_request(
                 load_balancer.provider_name(),
@@ -38,7 +53,8 @@ where
             );
             Ok(result)
         }
-        Err(e) => {
+        Ok(Err(e)) => {
+            // Request failed (not timeout)
             // Check if this is an instance-level failure (vs business error)
             if is_instance_failure(&e) {
                 // Record failed instance request
@@ -51,7 +67,7 @@ where
                 load_balancer.mark_instance_failure(&instance.name).await;
 
                 tracing::warn!(
-                    api_key = api_key,
+                    api_key_name = %crate::logging::sanitize_log_value(api_key_name),
                     instance = %instance.name,
                     error = %e,
                     "Instance marked unhealthy, session will failover on next request"
@@ -65,6 +81,30 @@ where
                 );
             }
             Err(e)
+        }
+        Err(_) => {
+            // Request timed out - treat as instance failure
+            crate::metrics::record_instance_request(
+                load_balancer.provider_name(),
+                &instance.name,
+                "failure",
+            );
+
+            load_balancer.mark_instance_failure(&instance.name).await;
+
+            let timeout_error = AppError::InternalError(format!(
+                "Request timed out after {} seconds",
+                timeout_duration.as_secs()
+            ));
+
+            tracing::warn!(
+                api_key_name = %crate::logging::sanitize_log_value(api_key_name),
+                instance = %instance.name,
+                timeout_seconds = timeout_duration.as_secs(),
+                "Request timed out, instance marked unhealthy"
+            );
+
+            Err(timeout_error)
         }
     }
 }
@@ -116,7 +156,11 @@ pub fn is_instance_failure(error: &AppError) -> bool {
         AppError::ProviderDisabled(_) => false,
         AppError::ConversionError(_) => false,
         AppError::ConfigError(_) => false,
-        AppError::InternalError(_) => false,
+        // Internal errors are NOT instance failures EXCEPT for timeouts
+        AppError::InternalError(msg) => {
+            // Check if this is a timeout error from our request-level timeout
+            msg.contains("timed out") || msg.contains("timeout")
+        }
         AppError::NoHealthyInstances(_) => false,
     }
 }
@@ -182,5 +226,21 @@ mod tests {
         assert!(!is_instance_failure(&AppError::Unauthorized("Invalid API key".to_string())));
         assert!(!is_instance_failure(&AppError::ModelNotFound("gpt-5".to_string())));
         assert!(!is_instance_failure(&AppError::ConversionError("Invalid format".to_string())));
+    }
+
+    #[test]
+    fn test_is_instance_failure_timeout() {
+        // Timeout errors SHOULD trigger instance failure
+        assert!(is_instance_failure(&AppError::InternalError(
+            "Request timed out after 300 seconds".to_string()
+        )));
+        assert!(is_instance_failure(&AppError::InternalError(
+            "timeout".to_string()
+        )));
+
+        // Other internal errors should NOT trigger instance failure
+        assert!(!is_instance_failure(&AppError::InternalError(
+            "Some other internal error".to_string()
+        )));
     }
 }

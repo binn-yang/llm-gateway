@@ -40,7 +40,7 @@ pub async fn handle_chat_completions(
     let is_stream = request.stream.unwrap_or(false);
 
     tracing::info!(
-        api_key = %auth.api_key_name,
+        api_key_name = %auth.api_key_name,
         model = %model,
         stream = is_stream,
         "Handling chat completion request"
@@ -132,7 +132,7 @@ async fn handle_openai_request(
         metrics::record_duration(&auth.api_key_name, "openai", model, start.elapsed());
 
         tracing::info!(
-            api_key = %auth.api_key_name,
+            api_key_name = %auth.api_key_name,
             model = %model,
             duration_ms = start.elapsed().as_millis(),
             prompt_tokens = body.usage.as_ref().map(|u| u.prompt_tokens),
@@ -231,7 +231,7 @@ async fn handle_anthropic_request(
         metrics::record_duration(&auth.api_key_name, "anthropic", model, start.elapsed());
 
         tracing::info!(
-            api_key = %auth.api_key_name,
+            api_key_name = %auth.api_key_name,
             model = %model,
             duration_ms = start.elapsed().as_millis(),
             prompt_tokens = openai_body.usage.as_ref().map(|u| u.prompt_tokens),
@@ -343,7 +343,7 @@ async fn handle_gemini_request(
         metrics::record_duration(&auth.api_key_name, "gemini", model, start.elapsed());
 
         tracing::info!(
-            api_key = %auth.api_key_name,
+            api_key_name = %auth.api_key_name,
             model = %model,
             duration_ms = start.elapsed().as_millis(),
             prompt_tokens = openai_body.usage.as_ref().map(|u| u.prompt_tokens),
@@ -411,6 +411,7 @@ mod tests {
                     timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    weight: 100,
                 }],
                 anthropic: vec![AnthropicInstanceConfig {
                     name: "anthropic-test".to_string(),
@@ -421,6 +422,7 @@ mod tests {
                     api_version: "2023-06-01".to_string(),
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    weight: 100,
                     cache: crate::config::CacheConfig::default(),
                 }],
                 gemini: vec![ProviderInstanceConfig {
@@ -431,6 +433,7 @@ mod tests {
                     timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    weight: 100,
                 }],
             },
             metrics: MetricsConfig {

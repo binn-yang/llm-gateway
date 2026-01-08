@@ -122,7 +122,10 @@ async fn reload_config(
 
     // Phase 2: Build new load balancers from new config
     info!("Building new load balancers...");
-    let new_load_balancers = (*crate::server::build_load_balancers(&new_config)).clone();
+    // Note: We pass None for HTTP client during config reload. Active health checks
+    // will be disabled for the new load balancers, but the system will still function
+    // with timeout-based recovery.
+    let new_load_balancers = (*crate::server::build_load_balancers(&new_config, None)).clone();
 
     // Phase 3: Validate that each provider has at least one healthy instance
     for (provider, load_balancer) in new_load_balancers.iter() {
@@ -220,6 +223,7 @@ mod tests {
                     timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    weight: 100,
                 }],
                 anthropic: vec![AnthropicInstanceConfig {
                     name: "anthropic-test".to_string(),
@@ -230,6 +234,7 @@ mod tests {
                     api_version: "2023-06-01".to_string(),
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    weight: 100,
                     cache: crate::config::CacheConfig::default(),
                 }],
                 gemini: vec![ProviderInstanceConfig {
@@ -240,6 +245,7 @@ mod tests {
                     timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    weight: 100,
                 }],
             },
             metrics: MetricsConfig {

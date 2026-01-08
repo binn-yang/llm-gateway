@@ -50,6 +50,7 @@ mod tests {
             timeout_seconds: 30,
             priority: 1,
             failure_timeout_seconds: 60,
+            weight: 100,
         }
     }
 

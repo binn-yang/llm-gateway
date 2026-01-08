@@ -31,8 +31,13 @@ pub async fn start_server(config: Config) -> Result<()> {
     // Wrap config in ArcSwap for atomic reload support
     let config_swap = Arc::new(ArcSwap::from_pointee(config.clone()));
 
-    // Build load balancers for each provider type and wrap in ArcSwap for reload
-    let load_balancers = Arc::new(arc_swap::ArcSwap::from_pointee((*build_load_balancers(&config)).clone()));
+    // Create HTTP client (before load balancers so they can use it for health checks)
+    let http_client = Arc::new(reqwest::Client::new());
+
+    // Build load balancers for each provider type with HTTP client for active health checks
+    let load_balancers = Arc::new(arc_swap::ArcSwap::from_pointee(
+        (*build_load_balancers(&config, Some(&http_client))).clone()
+    ));
 
     // Setup signal handlers (SIGTERM, SIGINT for shutdown; SIGHUP for reload)
     let (shutdown_tx, signal_handle) = setup_signal_handlers(config_swap.clone(), load_balancers.clone());
@@ -40,12 +45,11 @@ pub async fn start_server(config: Config) -> Result<()> {
 
     // Create shared state
     let router = Arc::new(ModelRouter::new(config_swap.clone()));
-    let http_client = reqwest::Client::new();
 
     let app_state = handlers::chat_completions::AppState {
         config: config_swap.clone(),
         router,
-        http_client,
+        http_client: (*http_client).clone(),
         load_balancers,
     };
 
@@ -123,7 +127,7 @@ fn create_router(
 }
 
 /// Build load balancers for each provider type
-pub fn build_load_balancers(config: &Config) -> Arc<HashMap<Provider, Arc<LoadBalancer>>> {
+pub fn build_load_balancers(config: &Config, http_client: Option<&reqwest::Client>) -> Arc<HashMap<Provider, Arc<LoadBalancer>>> {
     let mut load_balancers = HashMap::new();
 
     // OpenAI load balancer
@@ -140,7 +144,11 @@ pub fn build_load_balancers(config: &Config) -> Arc<HashMap<Provider, Arc<LoadBa
             .collect();
 
         if !instances.is_empty() {
-            let lb = Arc::new(LoadBalancer::new("openai".to_string(), instances));
+            let lb = Arc::new(LoadBalancer::with_client(
+                "openai".to_string(),
+                instances,
+                http_client.cloned(),
+            ));
 
             // Spawn background tasks for this load balancer
             tokio::spawn({
@@ -175,7 +183,11 @@ pub fn build_load_balancers(config: &Config) -> Arc<HashMap<Provider, Arc<LoadBa
             .collect();
 
         if !instances.is_empty() {
-            let lb = Arc::new(LoadBalancer::new("anthropic".to_string(), instances));
+            let lb = Arc::new(LoadBalancer::with_client(
+                "anthropic".to_string(),
+                instances,
+                http_client.cloned(),
+            ));
 
             // Spawn background tasks
             tokio::spawn({
@@ -210,7 +222,11 @@ pub fn build_load_balancers(config: &Config) -> Arc<HashMap<Provider, Arc<LoadBa
             .collect();
 
         if !instances.is_empty() {
-            let lb = Arc::new(LoadBalancer::new("gemini".to_string(), instances));
+            let lb = Arc::new(LoadBalancer::with_client(
+                "gemini".to_string(),
+                instances,
+                http_client.cloned(),
+            ));
 
             // Spawn background tasks
             tokio::spawn({
@@ -295,6 +311,7 @@ mod tests {
                     timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    weight: 100,
                 }],
                 anthropic: vec![AnthropicInstanceConfig {
                     name: "anthropic-primary".to_string(),
@@ -305,6 +322,7 @@ mod tests {
                     api_version: "2023-06-01".to_string(),
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    weight: 100,
                     cache: crate::config::CacheConfig::default(),
                 }],
                 gemini: vec![ProviderInstanceConfig {
@@ -315,6 +333,7 @@ mod tests {
                     timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
+                    weight: 100,
                 }],
             },
             metrics: MetricsConfig {
@@ -345,7 +364,9 @@ mod tests {
         let config_swap = Arc::new(ArcSwap::from_pointee(config.clone()));
         let router = Arc::new(ModelRouter::new(config_swap.clone()));
         let http_client = reqwest::Client::new();
-        let load_balancers = Arc::new(arc_swap::ArcSwap::from_pointee((*build_load_balancers(&config)).clone()));
+        let load_balancers = Arc::new(arc_swap::ArcSwap::from_pointee(
+            (*build_load_balancers(&config, Some(&http_client))).clone()
+        ));
 
         let app_state = handlers::chat_completions::AppState {
             config: config_swap.clone(),

@@ -52,7 +52,7 @@ pub async fn handle_messages(
     let is_stream = request.stream.unwrap_or(false);
 
     tracing::info!(
-        api_key = %auth.api_key_name,
+        api_key_name = %auth.api_key_name,
         model = %model,
         stream = is_stream,
         "Handling native Anthropic messages request"
@@ -136,7 +136,7 @@ pub async fn handle_messages(
         metrics::record_duration(&auth.api_key_name, provider_name, &model, start.elapsed());
 
         tracing::info!(
-            api_key = %auth.api_key_name,
+            api_key_name = %auth.api_key_name,
             model = %model,
             duration_ms = start.elapsed().as_millis(),
             input_tokens = body.usage.input_tokens,
