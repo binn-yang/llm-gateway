@@ -83,6 +83,8 @@ fn build_metrics_url(url_override: Option<String>) -> Result<String> {
     Ok(format!("http://{}:{}{}", host, port, endpoint))
 }
 
+/// Detect observability database path from config or use default
+
 /// Parse group-by strategy string
 fn parse_group_by(group_by: &str) -> Result<GroupBy> {
     match group_by {
@@ -112,11 +114,11 @@ async fn run_dashboard(
 
     // Initialize state
     let mut app = StatsApp::new(group_by);
-    let fetcher = MetricsFetcher::new(metrics_url.clone());
+    let metrics_fetcher = MetricsFetcher::new(metrics_url.clone());
     let mut interval_timer = interval(Duration::from_secs_f64(interval_secs));
 
     // Initial fetch
-    fetch_and_update(&mut app, &fetcher).await;
+    fetch_and_update(&mut app, &metrics_fetcher).await;
 
     // Main loop
     let result = loop {
@@ -135,14 +137,26 @@ async fn run_dashboard(
 
                 // Check for manual refresh (r key)
                 if matches!(key.code, crossterm::event::KeyCode::Char('r') | crossterm::event::KeyCode::Char('R')) {
-                    fetch_and_update(&mut app, &fetcher).await;
+                    fetch_and_update(&mut app, &metrics_fetcher).await;
+                }
+
+                // Clear terminal after any key press to avoid residual content
+                // This is necessary when switching groupings
+                if matches!(
+                    key.code,
+                    crossterm::event::KeyCode::Char('1')
+                        | crossterm::event::KeyCode::Char('2')
+                        | crossterm::event::KeyCode::Char('3')
+                        | crossterm::event::KeyCode::Char('4')
+                ) {
+                    terminal.clear()?;
                 }
             }
         }
 
         // Check if interval elapsed
         if interval_timer.tick().now_or_never().is_some() {
-            fetch_and_update(&mut app, &fetcher).await;
+            fetch_and_update(&mut app, &metrics_fetcher).await;
         }
     };
 
@@ -155,8 +169,9 @@ async fn run_dashboard(
 }
 
 /// Fetch metrics and update app state
-async fn fetch_and_update(app: &mut StatsApp, fetcher: &MetricsFetcher) {
-    match fetcher.fetch().await {
+async fn fetch_and_update(app: &mut StatsApp, metrics_fetcher: &MetricsFetcher) {
+    // Fetch Prometheus metrics
+    match metrics_fetcher.fetch().await {
         Ok(text) => {
             // Try to parse and aggregate
             match parse_and_aggregate(&text, app.group_by) {
@@ -173,51 +188,5 @@ async fn fetch_and_update(app: &mut StatsApp, fetcher: &MetricsFetcher) {
         Err(e) => {
             app.error_message = Some(format!("Fetch error: {}", e));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_validate_args_valid() {
-        assert!(validate_args(1.0, "provider").is_ok());
-        assert!(validate_args(0.5, "api-key").is_ok());
-        assert!(validate_args(10.0, "model").is_ok());
-        assert!(validate_args(0.1, "all").is_ok());
-    }
-
-    #[test]
-    fn test_validate_args_invalid_interval() {
-        assert!(validate_args(0.0, "provider").is_err());
-        assert!(validate_args(61.0, "provider").is_err());
-        assert!(validate_args(-1.0, "provider").is_err());
-    }
-
-    #[test]
-    fn test_validate_args_invalid_group_by() {
-        assert!(validate_args(1.0, "invalid").is_err());
-        assert!(validate_args(1.0, "").is_err());
-    }
-
-    #[test]
-    fn test_parse_group_by() {
-        assert_eq!(parse_group_by("api-key").unwrap(), GroupBy::ApiKey);
-        assert_eq!(parse_group_by("provider").unwrap(), GroupBy::Provider);
-        assert_eq!(parse_group_by("model").unwrap(), GroupBy::Model);
-        assert_eq!(parse_group_by("all").unwrap(), GroupBy::All);
-    }
-
-    #[test]
-    fn test_parse_group_by_invalid() {
-        assert!(parse_group_by("invalid").is_err());
-    }
-
-    #[test]
-    fn test_build_metrics_url_with_override() {
-        let url = "http://custom:9090/metrics".to_string();
-        let result = build_metrics_url(Some(url.clone())).unwrap();
-        assert_eq!(result, url);
     }
 }

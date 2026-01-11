@@ -70,3 +70,27 @@ timeout_seconds = 300
 enabled = true
 endpoint = "/metrics"
 include_api_key_hash = true
+
+# Observability (Logs, Traces, Metrics Persistence)
+# Enable this for persistent logs, request tracing, and historical metrics
+[observability]
+enabled = false  # Set to true to enable SQLite-based observability
+database_path = "./data/observability.db"
+
+# Performance tuning
+[observability.performance]
+batch_size = 100              # Number of log entries per batch
+flush_interval_ms = 100       # Max time before flushing batch (milliseconds)
+max_buffer_size = 10000       # Ring buffer size to prevent blocking
+
+# Data retention policies (automatic cleanup)
+[observability.retention]
+logs_days = 7                     # Keep logs for 7 days
+spans_days = 7                    # Keep trace spans for 7 days
+metrics_snapshots_days = 30       # Keep metrics snapshots for 30 days
+cleanup_hour = 3                  # Run cleanup at 3 AM daily (0-23)
+
+# Prometheus metrics snapshots (for historical analysis)
+[observability.metrics_snapshot]
+enabled = true                    # Snapshot metrics to SQLite
+interval_seconds = 300            # Snapshot every 5 minutes

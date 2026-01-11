@@ -8,6 +8,8 @@ pub struct Config {
     pub routing: RoutingConfig,
     pub providers: ProvidersConfig,
     pub metrics: MetricsConfig,
+    #[serde(default)]
+    pub observability: ObservabilityConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -150,6 +152,158 @@ pub struct MetricsConfig {
     pub enabled: bool,
     pub endpoint: String,
     pub include_api_key_hash: bool,
+}
+
+/// Observability configuration (logs, traces, metrics persistence)
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ObservabilityConfig {
+    /// Enable observability features (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// SQLite database path (default: "./data/observability.db")
+    #[serde(default = "default_database_path")]
+    pub database_path: String,
+
+    /// Performance tuning
+    #[serde(default)]
+    pub performance: ObservabilityPerformanceConfig,
+
+    /// Data retention policies
+    #[serde(default)]
+    pub retention: ObservabilityRetentionConfig,
+
+    /// Metrics snapshot configuration
+    #[serde(default)]
+    pub metrics_snapshot: MetricsSnapshotConfig,
+}
+
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            database_path: default_database_path(),
+            performance: ObservabilityPerformanceConfig::default(),
+            retention: ObservabilityRetentionConfig::default(),
+            metrics_snapshot: MetricsSnapshotConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ObservabilityPerformanceConfig {
+    /// Number of log entries per batch (default: 100)
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+
+    /// Max time before flushing batch in milliseconds (default: 100)
+    #[serde(default = "default_flush_interval_ms")]
+    pub flush_interval_ms: u64,
+
+    /// Max buffer size for ring buffer (default: 10000)
+    #[serde(default = "default_max_buffer_size")]
+    pub max_buffer_size: usize,
+}
+
+impl Default for ObservabilityPerformanceConfig {
+    fn default() -> Self {
+        Self {
+            batch_size: default_batch_size(),
+            flush_interval_ms: default_flush_interval_ms(),
+            max_buffer_size: default_max_buffer_size(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ObservabilityRetentionConfig {
+    /// Logs retention in days (default: 7)
+    #[serde(default = "default_logs_days")]
+    pub logs_days: u64,
+
+    /// Spans retention in days (default: 7)
+    #[serde(default = "default_spans_days")]
+    pub spans_days: u64,
+
+    /// Metrics snapshots retention in days (default: 30)
+    #[serde(default = "default_metrics_snapshots_days")]
+    pub metrics_snapshots_days: u64,
+
+    /// Hour of day to run cleanup (0-23, default: 3 for 3am)
+    #[serde(default = "default_cleanup_hour")]
+    pub cleanup_hour: u8,
+}
+
+impl Default for ObservabilityRetentionConfig {
+    fn default() -> Self {
+        Self {
+            logs_days: default_logs_days(),
+            spans_days: default_spans_days(),
+            metrics_snapshots_days: default_metrics_snapshots_days(),
+            cleanup_hour: default_cleanup_hour(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MetricsSnapshotConfig {
+    /// Enable periodic metrics snapshots (default: true)
+    #[serde(default = "default_metrics_snapshot_enabled")]
+    pub enabled: bool,
+
+    /// Snapshot interval in seconds (default: 300 = 5 minutes)
+    #[serde(default = "default_snapshot_interval_seconds")]
+    pub interval_seconds: u64,
+}
+
+impl Default for MetricsSnapshotConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_metrics_snapshot_enabled(),
+            interval_seconds: default_snapshot_interval_seconds(),
+        }
+    }
+}
+
+// Default value functions for observability config
+fn default_database_path() -> String {
+    "./data/observability.db".to_string()
+}
+
+fn default_batch_size() -> usize {
+    100
+}
+
+fn default_flush_interval_ms() -> u64 {
+    100
+}
+
+fn default_max_buffer_size() -> usize {
+    10000
+}
+
+fn default_logs_days() -> u64 {
+    7
+}
+
+fn default_spans_days() -> u64 {
+    7
+}
+
+fn default_metrics_snapshots_days() -> u64 {
+    30
+}
+
+fn default_cleanup_hour() -> u8 {
+    3
+}
+
+fn default_metrics_snapshot_enabled() -> bool {
+    true
+}
+
+fn default_snapshot_interval_seconds() -> u64 {
+    300
 }
 
 pub fn load_config() -> anyhow::Result<Config> {
@@ -406,6 +560,7 @@ mod tests {
                 endpoint: "/metrics".to_string(),
                 include_api_key_hash: true,
             },
+            observability: ObservabilityConfig::default(),
         }
     }
 }

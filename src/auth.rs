@@ -163,6 +163,7 @@ mod tests {
                 endpoint: "/metrics".to_string(),
                 include_api_key_hash: true,
             },
+            observability: crate::config::ObservabilityConfig::default(),
         }
     }
 

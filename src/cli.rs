@@ -71,6 +71,15 @@ pub enum Commands {
         group_by: String,
     },
 
+    /// Query observability logs
+    Logs(crate::commands::logs::LogsArgs),
+
+    /// Display request trace
+    Trace(crate::commands::trace::TraceArgs),
+
+    /// Manage observability database
+    Observability(crate::commands::observability::ObservabilityArgs),
+
     /// Show version information
     Version,
 }

@@ -1,8 +1,7 @@
 use anyhow::Result;
 use colored::Colorize;
-use llm_gateway::{config, init_tracing, server};
+use llm_gateway::{config, server};
 use std::path::PathBuf;
-use tracing::info;
 
 use crate::{daemon, pid::PidFile};
 
@@ -47,9 +46,6 @@ pub async fn execute(daemon_mode: bool, pid_file: Option<PathBuf>) -> Result<()>
 
         // After daemonization, we're in the child process
         // Parent has exited, and stdout/stderr are redirected to log files
-
-        // Initialize tracing AFTER fork() to avoid macOS fork issues
-        init_tracing();
     } else {
         println!("{}", "Starting gateway in foreground mode...".green());
     }
@@ -59,11 +55,8 @@ pub async fn execute(daemon_mode: bool, pid_file: Option<PathBuf>) -> Result<()>
     // Load configuration
     let cfg = config::load_config()?;
 
-    if !daemon_mode {
-        info!("Starting LLM Gateway in foreground mode");
-    } else {
-        info!("Starting LLM Gateway in daemon mode");
-    }
+    // Note: Tracing will be initialized in server::start_server()
+    // with observability layer if enabled in config
 
     // Create PID file to prevent multiple instances
     let _pid_file = PidFile::create(pid_file)?;

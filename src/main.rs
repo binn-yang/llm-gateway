@@ -20,11 +20,15 @@ async fn main() -> Result<()> {
     // Parse CLI arguments
     let args = cli::Cli::parse();
 
-    // Initialize tracing/logging early (except for daemon mode)
-    // In daemon mode, tracing will be initialized after fork() to avoid macOS fork issues
-    let is_daemon_mode = matches!(args.get_command(), cli::Commands::Start { daemon: true, .. });
+    // Initialize tracing/logging early (except for daemon mode and start command)
+    // - In daemon mode, tracing will be initialized after fork()
+    // - In start command, tracing will be initialized in server.rs with optional observability layer
+    let needs_early_tracing = !matches!(
+        args.get_command(),
+        cli::Commands::Start { .. }
+    );
 
-    if !is_daemon_mode {
+    if needs_early_tracing {
         init_tracing();
     }
 
@@ -56,6 +60,15 @@ async fn main() -> Result<()> {
             group_by,
         } => {
             commands::stats::execute(interval, url, group_by).await?;
+        }
+        cli::Commands::Logs(args) => {
+            commands::logs::execute(args).await?;
+        }
+        cli::Commands::Trace(args) => {
+            commands::trace::execute(args).await?;
+        }
+        cli::Commands::Observability(args) => {
+            commands::observability::execute(args).await?;
         }
         cli::Commands::Version => {
             println!("LLM Gateway v{}", env!("CARGO_PKG_VERSION"));

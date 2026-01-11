@@ -2,7 +2,7 @@ use crate::{
     auth::AuthInfo,
     error::AppError,
     metrics,
-    models::anthropic::{MessagesRequest, MessagesResponse},
+    models::anthropic::{MessageContent, MessagesRequest, MessagesResponse},
     providers,
     streaming,
 };
@@ -74,8 +74,31 @@ pub async fn handle_messages(
         "/v1/messages",
     );
 
-    // 3. 透传原始模型名（thinking 字段已改为 Value，原样转发）
-    let anthropic_request = request;
+    // 3. 清理 assistant 消息中的 thinking 字段
+    // Anthropic API 的不对称设计：响应中的 thinking 格式 ≠ 请求中的 thinking 格式
+    // 当 Claude Code 将之前的响应作为历史发送时，需要清理不符合请求格式的 thinking
+    let mut anthropic_request = request;
+    for message in &mut anthropic_request.messages {
+        if message.role == "assistant" {
+            if let MessageContent::Blocks(ref mut blocks) = &mut message.content {
+                for block in blocks.iter_mut() {
+                    // 检查 thinking 字段是否存在且格式不正确
+                    if let Some(thinking) = &block.thinking {
+                        // 如果 thinking 是对象但缺少 signature 字段，删除它
+                        if let Some(obj) = thinking.as_object() {
+                            if !obj.contains_key("signature") {
+                                tracing::debug!(
+                                    thinking_content = ?obj.get("thinking"),
+                                    "Removing thinking field without signature from assistant message"
+                                );
+                                block.thinking = None;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // 4. Get LoadBalancer for Anthropic provider
     let load_balancers_map = state.load_balancers.load();

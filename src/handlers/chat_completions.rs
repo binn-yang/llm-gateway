@@ -25,6 +25,8 @@ pub struct AppState {
     pub router: Arc<ModelRouter>,
     pub http_client: reqwest::Client,
     pub load_balancers: Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<LoadBalancer>>>>,
+    /// Observability async writer (optional, only if enabled in config)
+    pub observability_writer: Option<Arc<crate::observability::AsyncWriter>>,
 }
 
 /// Handle /v1/chat/completions endpoint
@@ -39,7 +41,14 @@ pub async fn handle_chat_completions(
     let model = request.model.clone();
     let is_stream = request.stream.unwrap_or(false);
 
+    // Create root span for request tracing (if observability enabled)
+    let span = crate::observability::SpanContext::new_root("chat_completions");
+    let request_id = span.request_id.clone();
+    let span_id = span.span_id.clone();
+
     tracing::info!(
+        request_id = %request_id,
+        span_id = %span_id,
         api_key_name = %auth.api_key_name,
         model = %model,
         stream = is_stream,
@@ -64,7 +73,7 @@ pub async fn handle_chat_completions(
     );
 
     // Route based on provider (model name is passed through directly)
-    match route_info.provider {
+    let mut response = match route_info.provider {
         Provider::OpenAI => {
             handle_openai_request(&state, &auth, request, is_stream, &model, start).await
         }
@@ -74,7 +83,29 @@ pub async fn handle_chat_completions(
         Provider::Gemini => {
             handle_gemini_request(&state, &auth, request, is_stream, &model, start).await
         }
+    }?;
+
+    // Record span (if observability enabled)
+    if let Some(writer) = &state.observability_writer {
+        let mut span_attributes = serde_json::Map::new();
+        span_attributes.insert("provider".to_string(), route_info.provider.as_str().into());
+        span_attributes.insert("model".to_string(), model.clone().into());
+        span_attributes.insert("api_key_name".to_string(), auth.api_key_name.clone().into());
+
+        let mut span_clone = span.clone();
+        span_clone.attributes = serde_json::Value::Object(span_attributes);
+
+        let span_record = crate::observability::SpanRecord::from_context(&span_clone, "ok");
+        writer.write_span(span_record);
     }
+
+    // Add X-Request-ID header to response
+    response.headers_mut().insert(
+        "X-Request-ID",
+        request_id.parse().unwrap_or_else(|_| "invalid".parse().unwrap()),
+    );
+
+    Ok(response)
 }
 
 async fn handle_openai_request(
@@ -441,6 +472,7 @@ mod tests {
                 endpoint: "/metrics".to_string(),
                 include_api_key_hash: true,
             },
+            observability: crate::config::ObservabilityConfig::default(),
         };
 
         let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(config)));
@@ -454,6 +486,7 @@ mod tests {
             router,
             http_client,
             load_balancers,
+            observability_writer: None,
         }
     }
 

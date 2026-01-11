@@ -24,12 +24,20 @@ use crate::{
 /// 4. Binds to the configured address
 /// 5. Serves requests with graceful shutdown support
 pub async fn start_server(config: Config) -> Result<()> {
-    // Initialize tracing/logging first (before any logging calls)
-    // If observability is enabled, initialize with observability layer
-    let (observability_writer, observability_db) = if config.observability.enabled {
+    // Initialize metrics
+    info!("Initializing Prometheus metrics...");
+    let metrics_handle = Arc::new(metrics::init_metrics());
+
+    // Initialize observability (if enabled)
+    let observability_writer = if config.observability.enabled {
+        info!("Initializing observability subsystem...");
+
         // Create database connection
         let db_url = format!("sqlite:{}", config.observability.database_path);
-        let db = Arc::new(crate::observability::ObservabilityDb::new(&db_url).await?);
+        let db = crate::observability::ObservabilityDb::new(&db_url).await?;
+        let db = Arc::new(db);
+
+        // Spawn async writer
         let batch_size = config.observability.performance.batch_size;
         let flush_interval = std::time::Duration::from_millis(
             config.observability.performance.flush_interval_ms
@@ -39,61 +47,19 @@ pub async fn start_server(config: Config) -> Result<()> {
             batch_size,
             flush_interval,
         );
-        let writer = Arc::new(writer);
 
-        // Initialize tracing with observability layer
-        crate::add_observability_layer(writer.clone());
-
-        tracing::info!(
+        info!(
             database = %config.observability.database_path,
             batch_size = batch_size,
             flush_interval_ms = config.observability.performance.flush_interval_ms,
-            "Observability subsystem initialized with SQLite logging"
+            "Observability subsystem initialized"
         );
 
-        (Some(writer), Some(db))
+        Some(Arc::new(writer))
     } else {
-        // Initialize basic tracing (console only)
-        crate::init_tracing();
-        tracing::info!("Observability subsystem disabled (console logging only)");
-        (None, None)
+        info!("Observability subsystem disabled");
+        None
     };
-
-    // Initialize metrics
-    tracing::info!("Initializing Prometheus metrics...");
-    let metrics_handle = Arc::new(metrics::init_metrics());
-
-    // Spawn observability background tasks if enabled
-    if let Some(ref db) = observability_db {
-        // Spawn cleanup task
-        if config.observability.enabled {
-            let cleanup_config = crate::observability::CleanupConfig {
-                cleanup_hour: config.observability.retention.cleanup_hour as u32,
-                check_interval: std::time::Duration::from_secs(3600),
-            };
-            crate::observability::spawn_cleanup_task(db.clone(), cleanup_config);
-            tracing::info!(
-                cleanup_hour = cleanup_config.cleanup_hour,
-                "Spawned observability cleanup task"
-            );
-        }
-
-        // Spawn metrics snapshot task if enabled
-        if config.observability.metrics_snapshot.enabled {
-            let snapshot_interval = std::time::Duration::from_secs(
-                config.observability.metrics_snapshot.interval_seconds
-            );
-            crate::observability::metrics_snapshot::spawn_snapshot_task(
-                metrics_handle.clone(),
-                db.clone(),
-                snapshot_interval,
-            );
-            tracing::info!(
-                interval_seconds = config.observability.metrics_snapshot.interval_seconds,
-                "Spawned metrics snapshot task"
-            );
-        }
-    }
 
     // Wrap config in ArcSwap for atomic reload support
     let config_swap = Arc::new(ArcSwap::from_pointee(config.clone()));
@@ -122,7 +88,7 @@ pub async fn start_server(config: Config) -> Result<()> {
     };
 
     // Build the Axum router
-    let app = create_router(config_swap.clone(), app_state, metrics_handle, observability_db);
+    let app = create_router(config_swap.clone(), app_state, metrics_handle);
 
     // Create socket address
     let addr = SocketAddr::from((
@@ -162,7 +128,6 @@ fn create_router(
     config: Arc<arc_swap::ArcSwap<Config>>,
     app_state: handlers::chat_completions::AppState,
     metrics_handle: Arc<metrics_exporter_prometheus::PrometheusHandle>,
-    observability_db: Option<Arc<crate::observability::ObservabilityDb>>,
 ) -> Router {
     // Create authenticated routes
     let auth_routes = Router::new()
@@ -181,32 +146,15 @@ fn create_router(
         ))
         .with_state(app_state);
 
-    // Create observability API routes (if enabled)
-    let mut app = Router::new()
+    // Combine with public routes
+    Router::new()
         // Public endpoints (no auth required)
         .route("/health", get(handlers::health::health_check))
         .route("/ready", get(handlers::health::readiness_check))
         .route("/metrics", get(handlers::metrics_handler::metrics))
         .with_state(metrics_handle)
         // Merge authenticated routes
-        .merge(auth_routes);
-
-    // Add observability API if enabled
-    if let Some(db) = observability_db {
-        let obs_state = handlers::observability_api::ObservabilityState { db };
-        let obs_routes = Router::new()
-            .route("/api/v1/logs", get(handlers::observability_api::get_logs))
-            .route("/api/v1/trace/:request_id", get(handlers::observability_api::get_trace))
-            .route("/api/v1/query", post(handlers::observability_api::structured_query))
-            .route("/api/v1/health", get(handlers::observability_api::health))
-            .route("/api/v1/analyze/slow-requests", get(handlers::analyze::analyze_slow_requests))
-            .route("/api/v1/analyze/error-patterns", get(handlers::analyze::analyze_error_patterns))
-            .route("/api/v1/analyze/instance-health", get(handlers::analyze::analyze_instance_health))
-            .with_state(obs_state);
-        app = app.merge(obs_routes);
-    }
-
-    app
+        .merge(auth_routes)
         // Security: Limit request body size to 10MB to prevent memory exhaustion attacks
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
@@ -427,7 +375,6 @@ mod tests {
                 endpoint: "/metrics".to_string(),
                 include_api_key_hash: true,
             },
-            observability: crate::config::ObservabilityConfig::default(),
         }
     }
 
@@ -460,14 +407,13 @@ mod tests {
             router,
             http_client,
             load_balancers,
-            observability_writer: None,
         };
 
         let recorder =
             metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
         let metrics_handle = Arc::new(recorder.handle());
 
-        let _app = create_router(config_swap, app_state, metrics_handle, None);
+        let _app = create_router(config_swap, app_state, metrics_handle);
         // Router created successfully - no panic
     }
 }

@@ -120,8 +120,8 @@ mod tests {
     #[test]
     fn test_count_enabled_providers() {
         use llm_gateway::config::{
-            AnthropicConfig, ApiKeyConfig, MetricsConfig, ProviderConfig,
-            ProvidersConfig, ServerConfig,
+            AnthropicInstanceConfig, MetricsConfig, ObservabilityConfig,
+            ProviderInstanceConfig, ProvidersConfig, RoutingConfig, ServerConfig,
         };
         use std::collections::HashMap;
 
@@ -133,35 +133,58 @@ mod tests {
                 log_format: "json".to_string(),
             },
             api_keys: vec![],
-            models: HashMap::new(),
+            routing: RoutingConfig {
+                rules: HashMap::new(),
+                default_provider: None,
+                discovery: llm_gateway::config::DiscoveryConfig {
+                    enabled: false,
+                    cache_ttl_seconds: 3600,
+                    refresh_on_startup: false,
+                    providers_with_listing: vec![],
+                },
+            },
             providers: ProvidersConfig {
-                openai: ProviderConfig {
+                openai: vec![ProviderInstanceConfig {
+                    name: "test".to_string(),
                     enabled: true,
                     api_key: "test".to_string(),
                     base_url: "test".to_string(),
                     timeout_seconds: 300,
-                },
-                anthropic: AnthropicConfig {
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                    weight: 100,
+                }],
+                anthropic: vec![AnthropicInstanceConfig {
+                    name: "test".to_string(),
                     enabled: true,
                     api_key: "test".to_string(),
                     base_url: "test".to_string(),
                     timeout_seconds: 300,
                     api_version: "2023-06-01".to_string(),
-                },
-                gemini: ProviderConfig {
-                    enabled: false,
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                    weight: 100,
+                    cache: llm_gateway::config::CacheConfig::default(),
+                }],
+                gemini: vec![ProviderInstanceConfig {
+                    name: "test".to_string(),
+                    enabled: true,
                     api_key: "test".to_string(),
                     base_url: "test".to_string(),
                     timeout_seconds: 300,
-                },
+                    priority: 1,
+                    failure_timeout_seconds: 60,
+                    weight: 100,
+                }],
             },
             metrics: MetricsConfig {
                 enabled: true,
                 endpoint: "/metrics".to_string(),
                 include_api_key_hash: true,
             },
+            observability: ObservabilityConfig::default(),
         };
 
-        assert_eq!(count_enabled_providers(&cfg), 2);
+        assert_eq!(count_enabled_providers(&cfg), 3);
     }
 }

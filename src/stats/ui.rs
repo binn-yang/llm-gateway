@@ -49,6 +49,16 @@ impl StatsApp {
 
     /// Render the UI
     pub fn render(&self, f: &mut Frame) {
+        // First, clear the entire frame with a blank block to avoid residual content
+        let clear_block = Block::default().style(Style::default());
+        f.render_widget(clear_block, f.area());
+
+        // Render basic metrics page
+        self.render_basic_metrics_page(f);
+    }
+
+    /// Render page 1: Basic Prometheus metrics (original functionality)
+    fn render_basic_metrics_page(&self, f: &mut Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -261,6 +271,7 @@ impl StatsApp {
         let paragraph = Paragraph::new(content).block(Block::default().borders(Borders::ALL));
         f.render_widget(paragraph, area);
     }
+
 }
 
 /// Format number with thousand separators
