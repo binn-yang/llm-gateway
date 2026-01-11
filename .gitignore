@@ -20,3 +20,11 @@ config.toml
 .idea/
 *.swp
 *.swo
+
+# Data directory (contains runtime databases and logs)
+/data/
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
