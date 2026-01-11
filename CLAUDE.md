@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-LLM Gateway is a high-performance Rust proxy that provides a unified OpenAI-compatible API for multiple LLM providers (OpenAI, Anthropic, Google Gemini). It features multi-instance load balancing with sticky sessions, automatic failover, and zero external dependencies (no Redis/database).
+LLM Gateway is a high-performance Rust proxy that provides multiple API formats for LLM providers (OpenAI, Anthropic, Google Gemini):
+- **Unified OpenAI-compatible API** (`/v1/chat/completions`) - works with all providers via automatic protocol conversion
+- **Native Anthropic Messages API** (`/v1/messages`) - direct passthrough for Claude models without conversion overhead
+
+It features multi-instance load balancing with sticky sessions, automatic failover, and zero external dependencies (no Redis/database).
 
 **Version**: 0.3.0
 **Stack**: Rust + Axum + Tokio + Prometheus
@@ -71,6 +75,9 @@ cargo test -- --nocaptures
 
 ### Request Flow (Multi-Layer)
 
+The gateway supports two API formats with different processing flows:
+
+**Flow 1: OpenAI-compatible API** (`/v1/chat/completions`)
 ```
 Client Request
     ↓
@@ -82,9 +89,22 @@ LoadBalancer (src/load_balancer.rs) - sticky session selection
     ↓
 Retry Layer (src/retry.rs) - health detection & metrics
     ↓
-Protocol Converter (src/converters/*) - if needed
+Protocol Converter (src/converters/*) - if needed (Anthropic/Gemini)
     ↓
 Provider (src/providers/*) - actual LLM API call
+```
+
+**Flow 2: Native Anthropic API** (`/v1/messages`)
+```
+Client Request (native Anthropic format)
+    ↓
+Auth Middleware (src/auth.rs) - validates API key
+    ↓
+LoadBalancer (src/load_balancer.rs) - sticky session selection
+    ↓
+Retry Layer (src/retry.rs) - health detection & metrics
+    ↓
+Provider (src/providers/anthropic.rs) - direct Anthropic API call (no conversion)
 ```
 
 ### Core Components
@@ -182,12 +202,29 @@ Metrics are recorded in `retry.rs` during request execution.
 
 **Directory**: `src/handlers/`
 
-- `chat_completions.rs` - `/v1/chat/completions` (OpenAI-compatible)
-- `messages.rs` - `/v1/messages` (native Anthropic API)
+The gateway provides two API formats through different handlers:
+
+**OpenAI-compatible API**:
+- `chat_completions.rs` - `/v1/chat/completions` (works with all providers via protocol conversion)
 - `models.rs` - `/v1/models` (model listing)
+
+**Native Provider APIs**:
+- `messages.rs` - `/v1/messages` (native Anthropic Messages API, direct passthrough)
+
+**Infrastructure**:
 - `health.rs` - `/health`, `/ready` endpoints
 
 **Important Pattern**: All handlers use `execute_with_session()` from `retry.rs` to integrate with load balancing and metrics.
+
+**When to use which API**:
+- Use `/v1/chat/completions` for:
+  - Multi-provider support in one codebase
+  - OpenAI-compatible tools (Cursor, Continue, etc.)
+  - Switching between providers without code changes
+- Use `/v1/messages` for:
+  - Claude Code and official Anthropic SDKs
+  - Maximum compatibility with Anthropic-specific features
+  - Avoiding protocol conversion overhead
 
 ## Configuration Patterns
 

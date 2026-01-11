@@ -1,10 +1,14 @@
 # LLM Gateway
 
-A high-performance, minimal LLM proxy gateway written in Rust that provides a unified OpenAI-compatible API for multiple LLM providers (OpenAI, Anthropic Claude, Google Gemini).
+A high-performance, minimal LLM proxy gateway written in Rust that provides multiple API formats for LLM providers (OpenAI, Anthropic Claude, Google Gemini):
+- **Unified OpenAI-compatible API** (`/v1/chat/completions`) - works with all providers via automatic protocol conversion
+- **Native Anthropic Messages API** (`/v1/messages`) - direct passthrough for Claude models without conversion overhead
 
 ## Features
 
-- **Unified OpenAI API**: Single `/v1/chat/completions` endpoint supports all providers
+- **Multiple API Formats**:
+  - Unified OpenAI-compatible API (`/v1/chat/completions`) with automatic protocol conversion
+  - Native Anthropic Messages API (`/v1/messages`) for direct Claude access
 - **Protocol Conversion**: Automatic request/response translation between OpenAI, Anthropic, and Gemini formats
 - **Smart Routing**: Prefix-based model routing to appropriate providers
 - **Multi-Instance Load Balancing**: Each provider supports multiple backend instances with priority-based selection
@@ -19,13 +23,28 @@ A high-performance, minimal LLM proxy gateway written in Rust that provides a un
 
 ## Architecture
 
+The gateway provides two API formats:
+
 ```
-┌─────────────┐
-│   Cursor    │  (OpenAI endpoint)
-│ Claude Code │  → /v1/chat/completions → Gateway → Auto-routes to:
-│   etc.      │                                    ├─ OpenAI (direct)
-└─────────────┘                                    ├─ Anthropic (converted)
-                                                   └─ Gemini (converted)
+┌─────────────────────────────────────────────────────────────────┐
+│  Option 1: OpenAI-compatible API (all providers)                │
+│  ┌─────────────┐                                                │
+│  │   Cursor    │                                                │
+│  │  Continue   │  → /v1/chat/completions → Gateway →           │
+│  │   etc.      │                          Auto-routes to:       │
+│  └─────────────┘                          ├─ OpenAI (direct)   │
+│                                            ├─ Anthropic (convert)│
+│                                            └─ Gemini (convert)  │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  Option 2: Native Anthropic API (Claude only)                   │
+│  ┌─────────────┐                                                │
+│  │ Claude Code │  → /v1/messages → Gateway → Anthropic          │
+│  │  Anthropic  │                   (native format, no convert)  │
+│  │    SDK      │                                                │
+│  └─────────────┘                                                │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Load Balancing & High Availability
@@ -306,7 +325,8 @@ cargo run --release
 | `/health` | GET | No | Health check |
 | `/ready` | GET | No | Readiness check |
 | `/metrics` | GET | No | Prometheus metrics |
-| `/v1/chat/completions` | POST | Yes | OpenAI-compatible chat completion (supports all models) |
+| `/v1/chat/completions` | POST | Yes | OpenAI-compatible chat completion (all providers) |
+| `/v1/messages` | POST | Yes | Native Anthropic Messages API (Claude models only) |
 | `/v1/models` | GET | Yes | List available models |
 
 ## Usage Examples
@@ -327,12 +347,16 @@ export OPENAI_API_KEY="sk-gateway-001"
 ### Using with Claude Code
 
 ```bash
-# If Claude Code supports OpenAI format:
-export ANTHROPIC_BASE_URL="http://localhost:8080/v1"
+# Native Anthropic API (recommended for Claude Code):
+export ANTHROPIC_BASE_URL="http://localhost:8080"
 export ANTHROPIC_API_KEY="sk-gateway-001"
+
+# Claude Code will use /v1/messages endpoint with native Anthropic format
 ```
 
-### Direct API Call
+### Direct API Calls
+
+**Option 1: OpenAI-compatible API** (works with all providers)
 
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
@@ -340,6 +364,22 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "claude-3-5-sonnet",
+    "messages": [
+      {"role": "user", "content": "Hello!"}
+    ]
+  }'
+```
+
+**Option 2: Native Anthropic API** (Claude only, no conversion)
+
+```bash
+curl -X POST http://localhost:8080/v1/messages \
+  -H "Authorization: Bearer sk-gateway-001" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-3-5-sonnet-20241022",
+    "max_tokens": 1024,
     "messages": [
       {"role": "user", "content": "Hello!"}
     ]
@@ -596,9 +636,10 @@ cargo build --release
 ```
 
 For more documentation:
+- **[IMPLEMENTATION.md](docs/IMPLEMENTATION.md)** - Complete implementation details and architecture
 - **[FEATURES.md](docs/FEATURES.md)** - Comprehensive feature documentation
 - **[CONVERSION_LIMITATIONS.md](docs/CONVERSION_LIMITATIONS.md)** - Provider conversion trade-offs
-- **[PHASES_COMPLETE.md](PHASES_COMPLETE.md)** - Implementation status and summary
+- **[DAEMON.md](docs/DAEMON.md)** - Running as a daemon/background service
 
 ## Configuration
 

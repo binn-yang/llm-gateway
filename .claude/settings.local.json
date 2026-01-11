@@ -43,7 +43,8 @@
       "Bash(__NEW_LINE__ echo -e \"\\\\n=== 完成！===\")",
       "Bash(echo:*)",
       "Bash(tail:*)",
-      "Bash(API_KEY=\"sk-gateway-YOUR-KEY-HERE-001\")"
+      "Bash(API_KEY=\"sk-gateway-YOUR-KEY-HERE-001\")",
+      "Bash(ls:*)"
     ]
   }
 }
