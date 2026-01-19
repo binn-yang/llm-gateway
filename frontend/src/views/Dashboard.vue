@@ -59,6 +59,12 @@
       </div>
     </div>
 
+    <!-- Requests Chart -->
+    <RequestsChart />
+
+    <!-- Instance Health -->
+    <InstanceHealth />
+
     <!-- Provider Stats -->
     <div v-if="statsData?.by_provider" class="glass-strong rounded-xl p-6">
       <h2 class="text-xl font-bold text-white mb-4">By Provider</h2>
@@ -90,6 +96,8 @@ import { useMetricsStore } from '@/stores/metrics'
 import { usePolling } from '@/composables/usePolling'
 import { dashboardApi, type StatsResponse } from '@/api/dashboard'
 import MetricsCard from '@/components/dashboard/MetricsCard.vue'
+import RequestsChart from '@/components/dashboard/RequestsChart.vue'
+import InstanceHealth from '@/components/dashboard/InstanceHealth.vue'
 import { Loading } from '@element-plus/icons-vue'
 
 const metricsStore = useMetricsStore()
