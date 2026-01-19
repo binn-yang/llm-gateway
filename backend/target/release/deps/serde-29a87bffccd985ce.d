@@ -1,0 +1,14 @@
+/Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/deps/serde-29a87bffccd985ce.d: /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/build/serde-b8c046c16de48f41/out/private.rs
+
+/Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/deps/libserde-29a87bffccd985ce.rlib: /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/build/serde-b8c046c16de48f41/out/private.rs
+
+/Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/deps/libserde-29a87bffccd985ce.rmeta: /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/build/serde-b8c046c16de48f41/out/private.rs
+
+/Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/build/serde-b8c046c16de48f41/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/build/serde-b8c046c16de48f41/out

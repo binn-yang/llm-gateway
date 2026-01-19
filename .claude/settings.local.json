@@ -44,7 +44,10 @@
       "Bash(echo:*)",
       "Bash(tail:*)",
       "Bash(API_KEY=\"sk-gateway-YOUR-KEY-HERE-001\")",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(git remote add:*)",
+      "Bash(git push:*)",
+      "Bash(git fetch:*)"
     ]
   }
 }

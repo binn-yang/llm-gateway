@@ -1,0 +1,14 @@
+/Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/deps/thiserror-f7f8ec01d7c00fd9.d: /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/lib.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/aserror.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/display.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/var.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/private.rs /Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/build/thiserror-808dfce16a0e345d/out/private.rs
+
+/Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/deps/libthiserror-f7f8ec01d7c00fd9.rlib: /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/lib.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/aserror.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/display.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/var.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/private.rs /Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/build/thiserror-808dfce16a0e345d/out/private.rs
+
+/Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/deps/libthiserror-f7f8ec01d7c00fd9.rmeta: /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/lib.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/aserror.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/display.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/var.rs /Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/private.rs /Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/build/thiserror-808dfce16a0e345d/out/private.rs
+
+/Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/lib.rs:
+/Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/aserror.rs:
+/Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/display.rs:
+/Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/var.rs:
+/Users/binn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.17/src/private.rs:
+/Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/build/thiserror-808dfce16a0e345d/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/build/thiserror-808dfce16a0e345d/out

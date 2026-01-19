@@ -1,0 +1,1 @@
+cargo:rustc-env=MIME_TYPES_GENERATED_PATH=/Users/binn/ZedProjects/token-run-workspace/llm-gateway/backend/target/release/build/mime_guess-067edb9c4d8fca78/out/mime_types_generated.rs
