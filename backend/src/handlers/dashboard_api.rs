@@ -1,14 +1,13 @@
 //! Dashboard HTTP API handlers
 //!
 //! Provides RESTful API for the Vue dashboard:
-//! - Metrics scraping from Prometheus endpoint
 //! - Real-time stats aggregation
 //! - Configuration management
 //! - Time-series queries from SQLite
 
 use crate::config::Config;
 use crate::error::AppError;
-use crate::load_balancer::{InstanceHealthInfo, LoadBalancer};
+use crate::load_balancer::LoadBalancer;
 use crate::router::Provider;
 use axum::extract::{Query, State};
 use axum::response::{Html, IntoResponse, Json};
@@ -18,51 +17,13 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
-use metrics_exporter_prometheus::PrometheusHandle;
 
 /// Dashboard state shared across all dashboard API handlers
 #[derive(Clone)]
 pub struct DashboardState {
     pub config: Arc<arc_swap::ArcSwap<crate::config::Config>>,
-    pub metrics_handle: Arc<PrometheusHandle>,
     pub db_pool: Option<SqlitePool>,
     pub load_balancers: Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<LoadBalancer>>>>,
-}
-
-/// GET /api/dashboard/metrics - Scrape Prometheus metrics
-///
-/// Returns the raw Prometheus metrics text format.
-/// The frontend will parse this to extract specific metrics.
-pub async fn get_metrics(
-    State(state): State<DashboardState>,
-) -> Result<Json<MetricsResponse>, AppError> {
-    let metrics_text = state.metrics_handle.render();
-
-    Ok(Json(MetricsResponse {
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        metrics: metrics_text,
-    }))
-}
-
-/// GET /api/dashboard/stats - Aggregated statistics
-///
-/// Returns pre-aggregated statistics for the dashboard.
-/// Query parameters:
-/// - group_by: How to group metrics (provider, model, api_key, all)
-pub async fn get_stats(
-    State(state): State<DashboardState>,
-    Query(params): Query<StatsQueryParams>,
-) -> Result<Json<StatsResponse>, AppError> {
-    let metrics_text = state.metrics_handle.render();
-
-    // Parse and aggregate metrics
-    let aggregated = aggregate_metrics(&metrics_text, &params.group_by)?;
-
-    Ok(Json(StatsResponse {
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        group_by: params.group_by,
-        data: aggregated,
-    }))
 }
 
 /// GET /api/dashboard/config - Current configuration
@@ -96,146 +57,8 @@ pub async fn get_dashboard() -> impl IntoResponse {
 }
 
 // ============================================================================
-// Data Structures
-// ============================================================================
-
-#[derive(Debug, Serialize)]
-pub struct MetricsResponse {
-    pub timestamp: String,
-    pub metrics: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct StatsQueryParams {
-    #[serde(default = "default_group_by")]
-    pub group_by: String,
-}
-
-fn default_group_by() -> String {
-    "provider".to_string()
-}
-
-#[derive(Debug, Serialize)]
-pub struct StatsResponse {
-    pub timestamp: String,
-    pub group_by: String,
-    pub data: serde_json::Value,
-}
-
-// ============================================================================
 // Helper Functions
 // ============================================================================
-
-/// Aggregate Prometheus metrics into structured data
-fn aggregate_metrics(metrics_text: &str, group_by: &str) -> Result<serde_json::Value, AppError> {
-    let mut result = serde_json::Map::new();
-
-    // Common metrics we want to extract
-    let metric_names = vec![
-        "llm_requests_total",
-        "llm_tokens_total",
-        "llm_request_duration_seconds_sum",
-        "llm_request_duration_seconds_count",
-        "llm_instance_health_status",
-        "llm_instance_requests_total",
-    ];
-
-    for metric_name in metric_names {
-        let value = extract_metric_value(metrics_text, metric_name, group_by)?;
-        result.insert(metric_name.to_string(), value);
-    }
-
-    Ok(serde_json::to_value(result).unwrap())
-}
-
-/// Extract a specific metric value from Prometheus text format
-fn extract_metric_value(
-    metrics_text: &str,
-    metric_name: &str,
-    group_by: &str,
-) -> Result<serde_json::Value, AppError> {
-    let lines: Vec<&str> = metrics_text.lines().collect();
-    let mut values = serde_json::Map::new();
-
-    for line in lines {
-        // Skip comments and empty lines
-        if line.starts_with('#') || line.trim().is_empty() {
-            continue;
-        }
-
-        // Parse metric line
-        // Format: metric_name{labels} value
-        if let Some(pos) = line.find('{') {
-            let name = &line[..pos];
-            if name != metric_name {
-                continue;
-            }
-
-            // Extract labels and value
-            if let Some(end_pos) = line.rfind('}') {
-                let labels_str = &line[pos + 1..end_pos];
-                let value_str = line[end_pos + 1..].trim();
-
-                // Parse labels
-                let labels = parse_labels(labels_str);
-
-                // Group by specified key
-                if let Some(group_key) = get_group_key(group_by, &labels) {
-                    if let Ok(value) = value_str.parse::<f64>() {
-                        let entry = values.entry(group_key).or_insert(serde_json::json!(0.0f64));
-                        if let Some(num) = entry.as_f64() {
-                            *entry = serde_json::json!(num + value);
-                        }
-                    }
-                }
-            }
-        } else if line.starts_with(metric_name) {
-            // Metric without labels
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                if let Ok(value) = parts[1].parse::<f64>() {
-                    let entry = values.entry("total".to_string()).or_insert(serde_json::json!(0.0f64));
-                    if let Some(num) = entry.as_f64() {
-                        *entry = serde_json::json!(num + value);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(serde_json::to_value(values).unwrap())
-}
-
-/// Parse Prometheus labels string into a map
-fn parse_labels(labels_str: &str) -> std::collections::HashMap<String, String> {
-    let mut labels = std::collections::HashMap::new();
-
-    // Split by comma, but handle quoted strings
-    let parts: Vec<&str> = labels_str.split(',').collect();
-
-    for part in parts {
-        let part = part.trim();
-        if let Some(eq_pos) = part.find('=') {
-            let key = part[..eq_pos].trim().to_string();
-            let value = part[eq_pos + 1..].trim().to_string();
-            labels.insert(key, value);
-        }
-    }
-
-    labels
-}
-
-/// Get the group key based on group_by parameter
-fn get_group_key(group_by: &str, labels: &std::collections::HashMap<String, String>) -> Option<String> {
-    match group_by {
-        "provider" => labels.get("provider").cloned(),
-        "model" => labels.get("model").cloned(),
-        "api_key" => labels.get("api_key").cloned(),
-        "instance" => labels.get("instance").cloned(),
-        "all" => Some("all".to_string()),
-        _ => Some("unknown".to_string()),
-    }
-}
 
 /// Mask secret values in configuration JSON
 fn mask_secrets(mut config: serde_json::Value) -> serde_json::Value {
@@ -300,11 +123,11 @@ pub async fn get_summary(
     // Get today's date
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
 
-    // Try to get data from SQLite first (more accurate for time-series data)
+    // Try to get data from SQLite requests table
     let (total_requests, total_tokens, today_requests, today_tokens) = if let Some(pool) = &state.db_pool {
         // Query total requests and tokens from SQLite (all time)
         let total_results = sqlx::query_as::<_, (i64, i64)>(
-            "SELECT COALESCE(SUM(request_count), 0), COALESCE(SUM(total_tokens), 0) FROM token_usage"
+            "SELECT COUNT(*), COALESCE(SUM(total_tokens), 0) FROM requests"
         )
         .fetch_one(pool)
         .await
@@ -312,7 +135,7 @@ pub async fn get_summary(
 
         // Query today's requests and tokens from SQLite (filtered by date)
         let today_results = sqlx::query_as::<_, (i64, i64)>(
-            "SELECT COALESCE(SUM(request_count), 0), COALESCE(SUM(total_tokens), 0) FROM token_usage WHERE date = ?"
+            "SELECT COUNT(*), COALESCE(SUM(total_tokens), 0) FROM requests WHERE date = ?"
         )
         .bind(&today)
         .fetch_one(pool)
@@ -321,55 +144,22 @@ pub async fn get_summary(
 
         match (total_results, today_results) {
             (Some(total), Some(today)) => (total.0, total.1, today.0, today.1),
-            _ => {
-                // Fallback to Prometheus metrics if SQLite query fails
-                let metrics_text = state.metrics_handle.render();
-                let mut req_total = 0i64;
-                let mut tok_total = 0i64;
-                for line in metrics_text.lines() {
-                    if line.starts_with('#') || line.trim().is_empty() {
-                        continue;
-                    }
-                    if line.contains("llm_requests_total{") {
-                        if let Some(value) = extract_metric_value_simple(&line) {
-                            req_total += value;
-                        }
-                    } else if line.contains("llm_tokens_total{") {
-                        if let Some(value) = extract_metric_value_simple(&line) {
-                            tok_total += value;
-                        }
-                    }
-                }
-                (req_total, tok_total, req_total, tok_total)
-            }
+            _ => (0, 0, 0, 0), // Fallback to zero if query fails
         }
     } else {
-        // No SQLite pool, use Prometheus metrics
-        let metrics_text = state.metrics_handle.render();
-        let mut req_total = 0i64;
-        let mut tok_total = 0i64;
-        for line in metrics_text.lines() {
-            if line.starts_with('#') || line.trim().is_empty() {
-                continue;
-            }
-            if line.contains("llm_requests_total{") {
-                if let Some(value) = extract_metric_value_simple(&line) {
-                    req_total += value;
-                }
-            } else if line.contains("llm_tokens_total{") {
-                if let Some(value) = extract_metric_value_simple(&line) {
-                    tok_total += value;
-                }
-            }
-        }
-        (req_total, tok_total, req_total, tok_total)
+        // No SQLite pool, return zeros
+        (0, 0, 0, 0)
     };
 
-    // Get system health from Prometheus metrics (real-time health status)
-    let metrics_text = state.metrics_handle.render();
+    // Get system health from LoadBalancer memory (real-time health status)
+    let load_balancers = state.load_balancers.load();
     let health_status = if instance_count > 0 {
-        let healthy_instances = count_healthy_instances(&metrics_text);
-        healthy_instances as f64 / instance_count as f64 >= 0.5
+        let mut healthy_count = 0;
+        for (_provider, load_balancer) in load_balancers.iter() {
+            let health_infos = load_balancer.get_all_instances_health().await;
+            healthy_count += health_infos.iter().filter(|h| h.is_healthy).count();
+        }
+        healthy_count as f64 / instance_count as f64 >= 0.5
     } else {
         false
     };
@@ -385,28 +175,6 @@ pub async fn get_summary(
         health_status,
         timestamp: chrono::Utc::now().to_rfc3339(),
     }))
-}
-
-/// Extract simple metric value from Prometheus line
-fn extract_metric_value_simple(line: &str) -> Option<i64> {
-    if let Some(end_pos) = line.rfind('}') {
-        let value_str = line[end_pos + 1..].trim();
-        if let Ok(v) = value_str.parse::<f64>() {
-            return Some(v as i64);
-        }
-    }
-    None
-}
-
-/// Count healthy instances
-fn count_healthy_instances(metrics_text: &str) -> i32 {
-    let mut healthy_count = 0;
-    for line in metrics_text.lines() {
-        if line.contains("llm_gateway_instance_health_status{") && line.contains("} 1") {
-            healthy_count += 1;
-        }
-    }
-    healthy_count
 }
 
 // ============================================================================
@@ -522,9 +290,9 @@ async fn query_token_usage_timeseries(
 ) -> Result<Vec<TimeseriesDataPoint>, AppError> {
     let group_clause = match group_by {
         "provider" => "provider",
-        "model" => "provider, model",
-        "api_key" => "api_key",
-        "instance" => "provider, instance",
+        "model" => "provider || ':' || model",
+        "api_key" => "api_key_name",
+        "instance" => "provider || ':' || instance",
         _ => return Err(AppError::ConfigError(format!("Invalid group_by: {}", group_by))),
     };
 
@@ -533,9 +301,9 @@ async fn query_token_usage_timeseries(
         SELECT
             {} as label,
             date || 'T' || printf('%02d', hour) || ':00:00' as timestamp,
-            SUM(total_tokens) as tokens,
-            SUM(request_count) as requests
-        FROM token_usage
+            CAST(SUM(total_tokens) AS INTEGER) as tokens,
+            CAST(COUNT(*) AS INTEGER) as requests
+        FROM requests
         WHERE date >= ?1 AND date <= ?2
         GROUP BY {}, date, hour
         ORDER BY date, hour
@@ -750,12 +518,11 @@ pub struct InstanceHealthDetail {
 /// Create the dashboard API router
 pub fn create_dashboard_router(state: DashboardState) -> Router {
     Router::new()
-        // Existing endpoints
-        .route("/metrics", axum::routing::get(get_metrics))
-        .route("/stats", axum::routing::get(get_stats))
+        // Configuration endpoint
         .route("/config", axum::routing::get(get_config))
+        // Summary endpoint
         .route("/summary", axum::routing::get(get_summary))
-        // New time-series endpoints
+        // Time-series endpoints
         .route("/timeseries/tokens", axum::routing::get(get_timeseries_tokens))
         .route("/timeseries/health", axum::routing::get(get_timeseries_health))
         // Instance health monitoring
@@ -766,16 +533,6 @@ pub fn create_dashboard_router(state: DashboardState) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_labels() {
-        let labels_str = r#"provider="openai",model="gpt-4",api_key="sk-test""#;
-        let labels = parse_labels(labels_str);
-
-        assert_eq!(labels.get("provider"), Some(&"openai".to_string()));
-        assert_eq!(labels.get("model"), Some(&"gpt-4".to_string()));
-        assert_eq!(labels.get("api_key"), Some(&"sk-test".to_string()));
-    }
 
     #[test]
     fn test_mask_secrets() {

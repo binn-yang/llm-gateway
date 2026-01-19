@@ -2,6 +2,6 @@
 //!
 //! Provides time-series storage and querying capabilities for monitoring data.
 
-pub mod metrics_snapshot;
+pub mod request_logger;
 
-pub use metrics_snapshot::MetricsSnapshotWriter;
+pub use request_logger::{RequestEvent, RequestLogger};

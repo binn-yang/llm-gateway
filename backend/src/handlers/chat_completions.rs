@@ -3,9 +3,10 @@ use crate::{
     converters,
     error::AppError,
     load_balancer::LoadBalancer,
-    metrics,
     models::openai::{ChatCompletionRequest, ChatCompletionResponse},
+    observability::{RequestEvent, RequestLogger},
     providers,
+    retry::RequestStatus,
     router::{ModelRouter, Provider},
     streaming,
 };
@@ -14,6 +15,7 @@ use axum::{
     response::{IntoResponse, Response},
     Extension, Json,
 };
+use chrono::{Timelike, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -25,6 +27,7 @@ pub struct AppState {
     pub router: Arc<ModelRouter>,
     pub http_client: reqwest::Client,
     pub load_balancers: Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<LoadBalancer>>>>,
+    pub request_logger: Option<Arc<RequestLogger>>,
 }
 
 /// Handle /v1/chat/completions endpoint
@@ -57,14 +60,6 @@ pub async fn handle_chat_completions(
         provider = %route_info.provider,
         requires_conversion = route_info.requires_conversion,
         "Routed model to provider"
-    );
-
-    // Record request metric
-    metrics::record_request(
-        &auth.api_key_name,
-        route_info.provider.as_str(),
-        &model,
-        "/v1/chat/completions",
     );
 
     // Route based on provider (model name is passed through directly)
@@ -104,10 +99,10 @@ async fn handle_openai_request(
         .ok_or_else(|| AppError::ProviderDisabled("OpenAI provider not configured".to_string()))?
         .clone();
 
-    // Execute request with sticky session
+    // Execute request with sticky session (returns SessionResult)
     let request_clone = request.clone();
     let http_client = state.http_client.clone();
-    let response = crate::retry::execute_with_session(
+    let session_result = crate::retry::execute_with_session(
         load_balancer.as_ref(),
         &auth.api_key_name,
         |instance| {
@@ -127,26 +122,93 @@ async fn handle_openai_request(
     )
     .await?;
 
+    let instance_name = session_result.instance_name;
+    let response = session_result.result?;
+    let duration_ms = start.elapsed().as_millis() as i64;
+
     if is_stream {
-        // Stream response
+        // Stream response - TODO: implement usage tracking for streaming
         tracing::debug!("Streaming response from OpenAI");
+
+        // Log request event (streaming requests have 0 tokens initially)
+        if let Some(logger) = &state.request_logger {
+            let now = Utc::now();
+            let event = RequestEvent {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                timestamp: now.timestamp_millis(),
+                date: now.format("%Y-%m-%d").to_string(),
+                hour: now.hour() as i32,
+                api_key_name: auth.api_key_name.clone(),
+                provider: "openai".to_string(),
+                instance: instance_name.clone(),
+                model: model.to_string(),
+                endpoint: "/v1/chat/completions".to_string(),
+                status: match session_result.status {
+                    RequestStatus::Success => "success".to_string(),
+                    RequestStatus::InstanceFailure => "failure".to_string(),
+                    RequestStatus::BusinessError => "business_error".to_string(),
+                    RequestStatus::Timeout => "timeout".to_string(),
+                },
+                error_type: None,
+                error_message: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                duration_ms,
+            };
+            logger.log_request(event).await;
+        }
+
         let sse_stream = streaming::create_openai_sse_stream(response);
         Ok(sse_stream.into_response())
     } else {
         // Non-streaming response
         let body: ChatCompletionResponse = response.json().await?;
 
-        // Record metrics
-        if let Some(usage) = &body.usage {
-            metrics::record_tokens(&auth.api_key_name, "openai", model, "input", usage.prompt_tokens, None);
-            metrics::record_tokens(&auth.api_key_name, "openai", model, "output", usage.completion_tokens, None);
+        // Extract usage
+        let (input_tokens, output_tokens, total_tokens) = match &body.usage {
+            Some(usage) => (
+                usage.prompt_tokens as i64,
+                usage.completion_tokens as i64,
+                (usage.prompt_tokens + usage.completion_tokens) as i64,
+            ),
+            None => (0, 0, 0),
+        };
+
+        // Log request event
+        if let Some(logger) = &state.request_logger {
+            let now = Utc::now();
+            let event = RequestEvent {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                timestamp: now.timestamp_millis(),
+                date: now.format("%Y-%m-%d").to_string(),
+                hour: now.hour() as i32,
+                api_key_name: auth.api_key_name.clone(),
+                provider: "openai".to_string(),
+                instance: instance_name.clone(),
+                model: model.to_string(),
+                endpoint: "/v1/chat/completions".to_string(),
+                status: match session_result.status {
+                    RequestStatus::Success => "success".to_string(),
+                    RequestStatus::InstanceFailure => "failure".to_string(),
+                    RequestStatus::BusinessError => "business_error".to_string(),
+                    RequestStatus::Timeout => "timeout".to_string(),
+                },
+                error_type: None,
+                error_message: None,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                duration_ms,
+            };
+            logger.log_request(event).await;
         }
-        metrics::record_duration(&auth.api_key_name, "openai", model, start.elapsed());
 
         tracing::info!(
             api_key_name = %auth.api_key_name,
             model = %model,
-            duration_ms = start.elapsed().as_millis(),
+            instance = %instance_name,
+            duration_ms = duration_ms,
             prompt_tokens = body.usage.as_ref().map(|u| u.prompt_tokens),
             completion_tokens = body.usage.as_ref().map(|u| u.completion_tokens),
             "Completed chat completion request"
@@ -183,9 +245,9 @@ async fn handle_anthropic_request(
         .ok_or_else(|| AppError::ProviderDisabled("Anthropic provider not configured".to_string()))?
         .clone();
 
-    // Execute request with sticky session
+    // Execute request with sticky session (returns SessionResult)
     let http_client = state.http_client.clone();
-    let response = crate::retry::execute_with_session(
+    let session_result = crate::retry::execute_with_session(
         load_balancer.as_ref(),
         &auth.api_key_name,
         |instance| {
@@ -208,10 +270,43 @@ async fn handle_anthropic_request(
     )
     .await?;
 
+    let instance_name = session_result.instance_name;
+    let response = session_result.result?;
+    let duration_ms = start.elapsed().as_millis() as i64;
+
     if is_stream {
-        // Stream response and convert back to OpenAI format
+        // Stream response - TODO: implement usage tracking for streaming
         tracing::debug!("Streaming response from Anthropic");
         let mut response = streaming::create_anthropic_sse_stream(response).into_response();
+
+        // Log request event (streaming)
+        if let Some(logger) = &state.request_logger {
+            let now = Utc::now();
+            let event = RequestEvent {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                timestamp: now.timestamp_millis(),
+                date: now.format("%Y-%m-%d").to_string(),
+                hour: now.hour() as i32,
+                api_key_name: auth.api_key_name.clone(),
+                provider: "anthropic".to_string(),
+                instance: instance_name.clone(),
+                model: model.to_string(),
+                endpoint: "/v1/chat/completions".to_string(),
+                status: match session_result.status {
+                    RequestStatus::Success => "success".to_string(),
+                    RequestStatus::InstanceFailure => "failure".to_string(),
+                    RequestStatus::BusinessError => "business_error".to_string(),
+                    RequestStatus::Timeout => "timeout".to_string(),
+                },
+                error_type: None,
+                error_message: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                duration_ms,
+            };
+            logger.log_request(event).await;
+        }
 
         // Add warnings header if present
         if let Some(warnings_json) = conversion_warnings.to_header_value() {
@@ -235,17 +330,50 @@ async fn handle_anthropic_request(
         // Convert back to OpenAI format
         let openai_body = converters::anthropic_response::convert_response(&anthropic_body)?;
 
-        // Record metrics
-        if let Some(usage) = &openai_body.usage {
-            metrics::record_tokens(&auth.api_key_name, "anthropic", model, "input", usage.prompt_tokens, None);
-            metrics::record_tokens(&auth.api_key_name, "anthropic", model, "output", usage.completion_tokens, None);
+        // Extract usage
+        let (input_tokens, output_tokens, total_tokens) = match &openai_body.usage {
+            Some(usage) => (
+                usage.prompt_tokens as i64,
+                usage.completion_tokens as i64,
+                (usage.prompt_tokens + usage.completion_tokens) as i64,
+            ),
+            None => (0, 0, 0),
+        };
+
+        // Log request event
+        if let Some(logger) = &state.request_logger {
+            let now = Utc::now();
+            let event = RequestEvent {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                timestamp: now.timestamp_millis(),
+                date: now.format("%Y-%m-%d").to_string(),
+                hour: now.hour() as i32,
+                api_key_name: auth.api_key_name.clone(),
+                provider: "anthropic".to_string(),
+                instance: instance_name.clone(),
+                model: model.to_string(),
+                endpoint: "/v1/chat/completions".to_string(),
+                status: match session_result.status {
+                    RequestStatus::Success => "success".to_string(),
+                    RequestStatus::InstanceFailure => "failure".to_string(),
+                    RequestStatus::BusinessError => "business_error".to_string(),
+                    RequestStatus::Timeout => "timeout".to_string(),
+                },
+                error_type: None,
+                error_message: None,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                duration_ms,
+            };
+            logger.log_request(event).await;
         }
-        metrics::record_duration(&auth.api_key_name, "anthropic", model, start.elapsed());
 
         tracing::info!(
             api_key_name = %auth.api_key_name,
             model = %model,
-            duration_ms = start.elapsed().as_millis(),
+            instance = %instance_name,
+            duration_ms = duration_ms,
             prompt_tokens = openai_body.usage.as_ref().map(|u| u.prompt_tokens),
             completion_tokens = openai_body.usage.as_ref().map(|u| u.completion_tokens),
             "Completed chat completion request via Anthropic"
@@ -289,10 +417,10 @@ async fn handle_gemini_request(
         .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?
         .clone();
 
-    // Execute request with sticky session
+    // Execute request with sticky session (returns SessionResult)
     let http_client = state.http_client.clone();
     let model_str = model.to_string();
-    let response = crate::retry::execute_with_session(
+    let session_result = crate::retry::execute_with_session(
         load_balancer.as_ref(),
         &auth.api_key_name,
         |instance| {
@@ -320,10 +448,43 @@ async fn handle_gemini_request(
     )
     .await?;
 
+    let instance_name = session_result.instance_name;
+    let response = session_result.result?;
+    let duration_ms = start.elapsed().as_millis() as i64;
+
     if is_stream {
-        // Stream response and convert back to OpenAI format
+        // Stream response - TODO: implement usage tracking for streaming
         tracing::debug!("Streaming response from Gemini");
         let mut response = streaming::create_gemini_sse_stream(response).into_response();
+
+        // Log request event (streaming)
+        if let Some(logger) = &state.request_logger {
+            let now = Utc::now();
+            let event = RequestEvent {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                timestamp: now.timestamp_millis(),
+                date: now.format("%Y-%m-%d").to_string(),
+                hour: now.hour() as i32,
+                api_key_name: auth.api_key_name.clone(),
+                provider: "gemini".to_string(),
+                instance: instance_name.clone(),
+                model: model.to_string(),
+                endpoint: "/v1/chat/completions".to_string(),
+                status: match session_result.status {
+                    RequestStatus::Success => "success".to_string(),
+                    RequestStatus::InstanceFailure => "failure".to_string(),
+                    RequestStatus::BusinessError => "business_error".to_string(),
+                    RequestStatus::Timeout => "timeout".to_string(),
+                },
+                error_type: None,
+                error_message: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                duration_ms,
+            };
+            logger.log_request(event).await;
+        }
 
         // Add warnings header if present
         if let Some(warnings_json) = conversion_warnings.to_header_value() {
@@ -347,17 +508,50 @@ async fn handle_gemini_request(
         // Convert back to OpenAI format
         let openai_body = converters::gemini_response::convert_response(&gemini_body)?;
 
-        // Record metrics
-        if let Some(usage) = &openai_body.usage {
-            metrics::record_tokens(&auth.api_key_name, "gemini", model, "input", usage.prompt_tokens, None);
-            metrics::record_tokens(&auth.api_key_name, "gemini", model, "output", usage.completion_tokens, None);
+        // Extract usage
+        let (input_tokens, output_tokens, total_tokens) = match &openai_body.usage {
+            Some(usage) => (
+                usage.prompt_tokens as i64,
+                usage.completion_tokens as i64,
+                (usage.prompt_tokens + usage.completion_tokens) as i64,
+            ),
+            None => (0, 0, 0),
+        };
+
+        // Log request event
+        if let Some(logger) = &state.request_logger {
+            let now = Utc::now();
+            let event = RequestEvent {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                timestamp: now.timestamp_millis(),
+                date: now.format("%Y-%m-%d").to_string(),
+                hour: now.hour() as i32,
+                api_key_name: auth.api_key_name.clone(),
+                provider: "gemini".to_string(),
+                instance: instance_name.clone(),
+                model: model.to_string(),
+                endpoint: "/v1/chat/completions".to_string(),
+                status: match session_result.status {
+                    RequestStatus::Success => "success".to_string(),
+                    RequestStatus::InstanceFailure => "failure".to_string(),
+                    RequestStatus::BusinessError => "business_error".to_string(),
+                    RequestStatus::Timeout => "timeout".to_string(),
+                },
+                error_type: None,
+                error_message: None,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                duration_ms,
+            };
+            logger.log_request(event).await;
         }
-        metrics::record_duration(&auth.api_key_name, "gemini", model, start.elapsed());
 
         tracing::info!(
             api_key_name = %auth.api_key_name,
             model = %model,
-            duration_ms = start.elapsed().as_millis(),
+            instance = %instance_name,
+            duration_ms = duration_ms,
             prompt_tokens = openai_body.usage.as_ref().map(|u| u.prompt_tokens),
             completion_tokens = openai_body.usage.as_ref().map(|u| u.completion_tokens),
             "Completed chat completion request via Gemini"
@@ -453,6 +647,7 @@ mod tests {
                 endpoint: "/metrics".to_string(),
                 include_api_key_hash: true,
             },
+            observability: crate::config::ObservabilityConfig::default(),
         };
 
         let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(config)));
@@ -466,6 +661,7 @@ mod tests {
             router,
             http_client,
             load_balancers,
+            request_logger: None,
         }
     }
 

@@ -1,9 +1,68 @@
 use crate::error::AppError;
 use crate::load_balancer::{LoadBalancer, ProviderInstance};
 use std::future::Future;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
+
+/// Request status for tracking the outcome of a request
+#[derive(Debug, Clone, PartialEq)]
+pub enum RequestStatus {
+    Success,
+    InstanceFailure,
+    BusinessError,
+    Timeout,
+}
+
+/// Result of executing a request with session information
+///
+/// This contains both the actual result (which may be an error) and metadata
+/// about which instance was used and what the final status was.
+///
+/// The `result` field holds `Result<T, AppError>` to preserve error information.
+/// The `status` field indicates the overall outcome (success, instance failure, etc.).
+pub struct SessionResult<T> {
+    pub result: Result<T, AppError>,
+    pub instance_name: String,
+    pub status: RequestStatus,
+}
+
+impl<T> SessionResult<T> {
+    /// Create a new successful session result
+    pub fn success(result: T, instance_name: String) -> Self {
+        Self {
+            result: Ok(result),
+            instance_name,
+            status: RequestStatus::Success,
+        }
+    }
+
+    /// Create a new instance failure session result
+    pub fn instance_failure(error: AppError, instance_name: String) -> Self {
+        Self {
+            result: Err(error),
+            instance_name,
+            status: RequestStatus::InstanceFailure,
+        }
+    }
+
+    /// Create a new business error session result
+    pub fn business_error(error: AppError, instance_name: String) -> Self {
+        Self {
+            result: Err(error),
+            instance_name,
+            status: RequestStatus::BusinessError,
+        }
+    }
+
+    /// Create a new timeout session result
+    pub fn timeout(error: AppError, instance_name: String) -> Self {
+        Self {
+            result: Err(error),
+            instance_name,
+            status: RequestStatus::Timeout,
+        }
+    }
+}
 
 /// Execute a request for a single API key name with automatic failover detection
 ///
@@ -12,7 +71,7 @@ use tokio::time::timeout;
 /// 2. Executes the request function with the selected instance
 /// 3. Applies request-level timeout based on instance configuration
 /// 4. If the request fails with an instance-level failure, marks the instance as unhealthy
-/// 5. Returns the result (success or error)
+/// 5. Returns SessionResult with instance information and status
 ///
 /// Note: This does NOT retry immediately. Instead, the next request from the same API key
 /// will automatically select a different healthy instance.
@@ -24,7 +83,7 @@ pub async fn execute_with_session<F, Fut, T>(
     load_balancer: &LoadBalancer,
     api_key_name: &str,
     request_fn: F,
-) -> Result<T, AppError>
+) -> Result<SessionResult<T>, AppError>
 where
     F: Fn(ProviderInstance) -> Fut,
     Fut: Future<Output = Result<T, AppError>>,
@@ -34,6 +93,8 @@ where
         .select_instance_for_key(api_key_name)
         .await
         .ok_or_else(|| AppError::NoHealthyInstances("No healthy instances available".to_string()))?;
+
+    let instance_name = instance.name.to_string();
 
     // Get timeout from instance configuration
     let timeout_duration = Duration::from_secs(instance.config.timeout_seconds());
@@ -46,52 +107,31 @@ where
 
     match request_result {
         Ok(Ok(result)) => {
-            // Record successful instance request
-            crate::metrics::record_instance_request(
-                load_balancer.provider_name(),
-                &instance.name,
-                "success",
-            );
-            Ok(result)
+            // Success - no instance failure
+            Ok(SessionResult::success(result, instance_name))
         }
         Ok(Err(e)) => {
             // Request failed (not timeout)
             // Check if this is an instance-level failure (vs business error)
             if is_instance_failure(&e) {
-                // Record failed instance request
-                crate::metrics::record_instance_request(
-                    load_balancer.provider_name(),
-                    &instance.name,
-                    "failure",
-                );
-
-                load_balancer.mark_instance_failure(&instance.name).await;
+                load_balancer.mark_instance_failure(&instance_name).await;
 
                 tracing::warn!(
                     api_key_name = %crate::logging::sanitize_log_value(api_key_name),
-                    instance = %instance.name,
+                    instance = %instance_name,
                     error = %e,
                     "Instance marked unhealthy, session will failover on next request"
                 );
+
+                Ok(SessionResult::instance_failure(e, instance_name))
             } else {
-                // Record business error (not instance failure)
-                crate::metrics::record_instance_request(
-                    load_balancer.provider_name(),
-                    &instance.name,
-                    "business_error",
-                );
+                // Business error - not instance failure
+                Ok(SessionResult::business_error(e, instance_name))
             }
-            Err(e)
         }
         Err(_) => {
             // Request timed out - treat as instance failure
-            crate::metrics::record_instance_request(
-                load_balancer.provider_name(),
-                &instance.name,
-                "failure",
-            );
-
-            load_balancer.mark_instance_failure(&instance.name).await;
+            load_balancer.mark_instance_failure(&instance_name).await;
 
             let timeout_error = AppError::InternalError(format!(
                 "Request timed out after {} seconds",
@@ -100,12 +140,12 @@ where
 
             tracing::warn!(
                 api_key_name = %crate::logging::sanitize_log_value(api_key_name),
-                instance = %instance.name,
+                instance = %instance_name,
                 timeout_seconds = timeout_duration.as_secs(),
                 "Request timed out, instance marked unhealthy"
             );
 
-            Err(timeout_error)
+            Ok(SessionResult::timeout(timeout_error, instance_name))
         }
     }
 }
@@ -243,5 +283,23 @@ mod tests {
         assert!(!is_instance_failure(&AppError::InternalError(
             "Some other internal error".to_string()
         )));
+    }
+
+    #[test]
+    fn test_session_result_success() {
+        let session_result = SessionResult::success("test".to_string(), "test-instance".to_string());
+        assert_eq!(session_result.instance_name, "test-instance");
+        assert!(matches!(session_result.status, RequestStatus::Success));
+        assert!(session_result.result.is_ok());
+        assert_eq!(session_result.result.unwrap(), "test");
+    }
+
+    #[test]
+    fn test_session_result_instance_failure() {
+        let error = AppError::InternalError("error".to_string());
+        let session_result: SessionResult<String> = SessionResult::instance_failure(error, "test-instance".to_string());
+        assert_eq!(session_result.instance_name, "test-instance");
+        assert!(matches!(session_result.status, RequestStatus::InstanceFailure));
+        assert!(session_result.result.is_err());
     }
 }

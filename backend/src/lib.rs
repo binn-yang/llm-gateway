@@ -7,7 +7,6 @@ pub mod handlers;
 pub mod image_utils;
 pub mod load_balancer;
 pub mod logging;
-pub mod metrics;
 pub mod models;
 pub mod observability;
 pub mod providers;

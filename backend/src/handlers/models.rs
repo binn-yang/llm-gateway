@@ -122,7 +122,7 @@ mod tests {
             router,
             http_client,
             load_balancers,
-            observability_writer: None,
+            request_logger: None,
         }
     }
 

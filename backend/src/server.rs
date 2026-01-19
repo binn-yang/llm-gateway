@@ -11,8 +11,7 @@ use crate::{
     config::Config,
     handlers,
     load_balancer::{LoadBalancer, ProviderInstance, ProviderInstanceConfigEnum},
-    metrics,
-    observability::MetricsSnapshotWriter,
+    observability::RequestLogger,
     router::{ModelRouter, Provider},
     signals::setup_signal_handlers,
     static_files,
@@ -21,22 +20,17 @@ use crate::{
 /// Start the LLM Gateway server
 ///
 /// This function:
-/// 1. Initializes metrics
-/// 2. Sets up signal handlers for graceful shutdown and config reload
-/// 3. Creates the Axum application
-/// 4. Binds to the configured address
-/// 5. Serves requests with graceful shutdown support
+/// 1. Sets up signal handlers for graceful shutdown and config reload
+/// 2. Creates the Axum application
+/// 3. Binds to the configured address
+/// 4. Serves requests with graceful shutdown support
 pub async fn start_server(config: Config) -> Result<()> {
     // Initialize tracing/logging
     crate::init_tracing();
     tracing::info!("LLM Gateway starting...");
 
-    // Initialize metrics
-    tracing::info!("Initializing Prometheus metrics...");
-    let metrics_handle = Arc::new(metrics::init_metrics());
-
-    // Initialize observability (SQLite-based metrics snapshot writer)
-    let (db_pool, observability_writer) = if config.observability.enabled {
+    // Initialize observability (SQLite-based request logger)
+    let (db_pool, request_logger) = if config.observability.enabled {
         tracing::info!(
             database = %config.observability.database_path,
             "Initializing observability database"
@@ -65,22 +59,13 @@ pub async fn start_server(config: Config) -> Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to run migrations: {}", e))?;
 
-        // Create metrics snapshot writer
-        let writer = MetricsSnapshotWriter::new(
-            metrics_handle.clone(),
-            pool.clone(),
-        );
+        // Create request logger with async channel (10k buffer)
+        let logger = Arc::new(RequestLogger::new(pool.clone(), 10000));
+        tracing::info!("Request logger initialized with 10000 event buffer");
 
-        // Start background snapshot task (every 60 seconds)
-        let writer_clone = writer.clone();
-        tokio::spawn(async move {
-            tracing::info!("Starting metrics snapshot task (60s interval)");
-            writer_clone.spawn_snapshot_task(60).await;
-        });
-
-        (Some(pool), Some(writer))
+        (Some(pool), Some(logger))
     } else {
-        tracing::info!("Observability disabled, skipping SQLite metrics storage");
+        tracing::info!("Observability disabled, skipping SQLite request logging");
         (None, None)
     };
 
@@ -107,10 +92,11 @@ pub async fn start_server(config: Config) -> Result<()> {
         router,
         http_client: (*http_client).clone(),
         load_balancers: load_balancers.clone(),
+        request_logger: request_logger.clone(),
     };
 
     // Build the Axum router
-    let app = create_router(config_swap.clone(), app_state, metrics_handle, db_pool, load_balancers.clone());
+    let app = create_router(config_swap.clone(), app_state, db_pool, load_balancers.clone());
 
     // Create socket address
     let addr = SocketAddr::from((
@@ -149,7 +135,6 @@ pub async fn start_server(config: Config) -> Result<()> {
 fn create_router(
     config: Arc<arc_swap::ArcSwap<Config>>,
     app_state: handlers::chat_completions::AppState,
-    metrics_handle: Arc<metrics_exporter_prometheus::PrometheusHandle>,
     db_pool: Option<SqlitePool>,
     load_balancers: Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<LoadBalancer>>>>,
 ) -> Router {
@@ -173,7 +158,6 @@ fn create_router(
     // Create dashboard API routes
     let dashboard_state = handlers::dashboard_api::DashboardState {
         config: config.clone(),
-        metrics_handle: metrics_handle.clone(),
         db_pool,
         load_balancers: load_balancers.clone(),
     };
@@ -184,8 +168,6 @@ fn create_router(
         // Public endpoints (no auth required)
         .route("/health", get(handlers::health::health_check))
         .route("/ready", get(handlers::health::readiness_check))
-        .route("/metrics", get(handlers::metrics_handler::metrics))
-        .with_state(metrics_handle)
         // Dashboard API
         .nest("/api/dashboard", dashboard_routes)
         // Dashboard frontend (SPA - must be last as a fallback)
@@ -448,15 +430,11 @@ mod tests {
             config: config_swap.clone(),
             router,
             http_client,
-            load_balancers,
-            observability_writer: None,
+            load_balancers: load_balancers.clone(),
+            request_logger: None,
         };
 
-        let recorder =
-            metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
-        let metrics_handle = Arc::new(recorder.handle());
-
-        let _app = create_router(config_swap, app_state, metrics_handle, None);
+        let _app = create_router(config_swap, app_state, None, load_balancers);
         // Router created successfully - no panic
     }
 }

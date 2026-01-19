@@ -1,9 +1,10 @@
 use crate::{
     auth::AuthInfo,
     error::AppError,
-    metrics,
     models::anthropic::{MessageContent, MessagesRequest, MessagesResponse},
+    observability::RequestEvent,
     providers,
+    retry::RequestStatus,
     streaming,
 };
 use axum::{
@@ -11,6 +12,7 @@ use axum::{
     response::{IntoResponse, Response},
     Extension, Json,
 };
+use chrono::{Timelike, Utc};
 use std::time::Instant;
 
 /// 复用 chat_completions 的 AppState
@@ -66,15 +68,7 @@ pub async fn handle_messages(
         "Routed model to provider"
     );
 
-    // 2. 记录请求指标
-    metrics::record_request(
-        &auth.api_key_name,
-        route_info.provider.as_str(),
-        &model,
-        "/v1/messages",
-    );
-
-    // 3. 清理 assistant 消息中的 thinking 字段
+    // 2. 清理 assistant 消息中的 thinking 字段
     // Anthropic API 的不对称设计：响应中的 thinking 格式 ≠ 请求中的 thinking 格式
     // 当 Claude Code 将之前的响应作为历史发送时，需要清理不符合请求格式的 thinking
     let mut anthropic_request = request;
@@ -107,9 +101,9 @@ pub async fn handle_messages(
         .ok_or_else(|| AppError::ProviderDisabled("Anthropic provider not configured".to_string()))?
         .clone();
 
-    // 5. Execute request with sticky session
+    // 3. Execute request with sticky session (returns SessionResult)
     let http_client = state.http_client.clone();
-    let response = crate::retry::execute_with_session(
+    let session_result = crate::retry::execute_with_session(
         load_balancer.as_ref(),
         &auth.api_key_name,
         |instance| {
@@ -129,41 +123,85 @@ pub async fn handle_messages(
     )
     .await?;
 
+    let instance_name = session_result.instance_name;
     let provider_name = route_info.provider.as_str();
+    let response = session_result.result?;
+    let duration_ms = start.elapsed().as_millis() as i64;
 
-    // 6. 根据 stream 参数处理响应
+    // 4. 根据 stream 参数处理响应
     if is_stream {
         // 流式响应 - 直接转发原生 Anthropic SSE
         tracing::debug!("Streaming native Anthropic SSE response");
+
+        // Log request event (streaming)
+        if let Some(logger) = &state.request_logger {
+            let now = Utc::now();
+            let event = RequestEvent {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                timestamp: now.timestamp_millis(),
+                date: now.format("%Y-%m-%d").to_string(),
+                hour: now.hour() as i32,
+                api_key_name: auth.api_key_name.clone(),
+                provider: provider_name.to_string(),
+                instance: instance_name.clone(),
+                model: model.to_string(),
+                endpoint: "/v1/messages".to_string(),
+                status: match session_result.status {
+                    RequestStatus::Success => "success".to_string(),
+                    RequestStatus::InstanceFailure => "failure".to_string(),
+                    RequestStatus::BusinessError => "business_error".to_string(),
+                    RequestStatus::Timeout => "timeout".to_string(),
+                },
+                error_type: None,
+                error_message: None,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                duration_ms,
+            };
+            logger.log_request(event).await;
+        }
+
         let sse_stream = streaming::create_native_anthropic_sse_stream(response);
         Ok(sse_stream.into_response())
     } else {
         // 非流式响应 - 返回原生 Anthropic JSON
         let body: MessagesResponse = response.json().await?;
 
-        // 记录指标
-        metrics::record_tokens(
-            &auth.api_key_name,
-            provider_name,
-            &model,
-            "input",
-            body.usage.input_tokens,
-            None,
-        );
-        metrics::record_tokens(
-            &auth.api_key_name,
-            provider_name,
-            &model,
-            "output",
-            body.usage.output_tokens,
-            None,
-        );
-        metrics::record_duration(&auth.api_key_name, provider_name, &model, start.elapsed());
+        // Log request event
+        if let Some(logger) = &state.request_logger {
+            let now = Utc::now();
+            let event = RequestEvent {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                timestamp: now.timestamp_millis(),
+                date: now.format("%Y-%m-%d").to_string(),
+                hour: now.hour() as i32,
+                api_key_name: auth.api_key_name.clone(),
+                provider: provider_name.to_string(),
+                instance: instance_name.clone(),
+                model: model.to_string(),
+                endpoint: "/v1/messages".to_string(),
+                status: match session_result.status {
+                    RequestStatus::Success => "success".to_string(),
+                    RequestStatus::InstanceFailure => "failure".to_string(),
+                    RequestStatus::BusinessError => "business_error".to_string(),
+                    RequestStatus::Timeout => "timeout".to_string(),
+                },
+                error_type: None,
+                error_message: None,
+                input_tokens: body.usage.input_tokens as i64,
+                output_tokens: body.usage.output_tokens as i64,
+                total_tokens: (body.usage.input_tokens + body.usage.output_tokens) as i64,
+                duration_ms,
+            };
+            logger.log_request(event).await;
+        }
 
         tracing::info!(
             api_key_name = %auth.api_key_name,
             model = %model,
-            duration_ms = start.elapsed().as_millis(),
+            instance = %instance_name,
+            duration_ms = duration_ms,
             input_tokens = body.usage.input_tokens,
             output_tokens = body.usage.output_tokens,
             stop_reason = ?body.stop_reason,

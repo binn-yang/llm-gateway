@@ -173,9 +173,6 @@ impl LoadBalancer {
                     last_failure_time: None,
                 },
             );
-
-            // Initialize instance health metric to 1 (healthy)
-            crate::metrics::update_instance_health(&provider_name, &inst.name, true);
         }
 
         Self {
@@ -335,9 +332,6 @@ impl LoadBalancer {
             inst_health.is_healthy = false;
             inst_health.last_failure_time = Some(Instant::now());
 
-            // Update instance health metric to 0 (unhealthy)
-            crate::metrics::update_instance_health(&self.provider_name, instance_name, false);
-
             tracing::warn!(
                 instance = instance_name,
                 "Instance marked unhealthy due to request failure"
@@ -360,9 +354,6 @@ impl LoadBalancer {
             });
 
             let session_count = self.sessions.len();
-
-            // Update session count metric
-            crate::metrics::update_session_count(&self.provider_name, session_count);
 
             tracing::debug!(
                 active_sessions = session_count,
@@ -398,9 +389,6 @@ impl LoadBalancer {
                                 Ok(()) => {
                                     // Health check passed, mark as healthy
                                     inst_health.is_healthy = true;
-
-                                    // Update instance health metric to 1 (healthy)
-                                    crate::metrics::update_instance_health(&self.provider_name, name, true);
 
                                     tracing::info!(
                                         instance = name,
