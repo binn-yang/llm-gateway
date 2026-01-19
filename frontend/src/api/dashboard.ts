@@ -12,11 +12,27 @@ export interface StatsQueryParams {
 
 export interface StatsResponse {
   timestamp: string
+  group_by: string
+  data: {
+    llm_requests_total?: Record<string, number>
+    llm_tokens_total?: Record<string, number>
+    llm_request_duration_seconds_sum?: Record<string, number>
+    llm_request_duration_seconds_count?: Record<string, number>
+    llm_instance_health_status?: Record<string, number>
+    llm_instance_requests_total?: Record<string, number>
+  }
+}
+
+export interface DashboardSummary {
+  api_key_count: number
+  provider_count: number
+  instance_count: number
+  today_requests: number
+  today_tokens: number
   total_requests: number
   total_tokens: number
-  avg_latency_seconds: number
-  error_rate: number
-  by_provider?: Record<string, ProviderStats>
+  health_status: boolean
+  timestamp: string
 }
 
 export interface ProviderStats {
@@ -68,4 +84,105 @@ export const dashboardApi = {
     const response = await apiClient.get<ConfigSummary>('/dashboard/config')
     return response.data
   },
+
+  /**
+   * Get dashboard summary
+   */
+  getSummary: async (): Promise<DashboardSummary> => {
+    const response = await apiClient.get<DashboardSummary>('/dashboard/summary')
+    return response.data
+  },
+
+  /**
+   * Get token usage time series
+   */
+  getTimeseriesTokens: async (params: TimeseriesQueryParams): Promise<TimeseriesResponse> => {
+    const response = await apiClient.get<TimeseriesResponse>('/dashboard/timeseries/tokens', {
+      params,
+    })
+    return response.data
+  },
+
+  /**
+   * Get instance health time series
+   */
+  getTimeseriesHealth: async (params: HealthTimeseriesQueryParams): Promise<HealthTimeseriesResponse> => {
+    const response = await apiClient.get<HealthTimeseriesResponse>('/dashboard/timeseries/health', {
+      params,
+    })
+    return response.data
+  },
+
+  /**
+   * Get all provider instances health status
+   */
+  getInstancesHealth: async (): Promise<InstancesHealthResponse> => {
+    const response = await apiClient.get<InstancesHealthResponse>('/dashboard/instances-health')
+    return response.data
+  },
+}
+
+// ============================================================================
+// Time-Series API Types
+// ============================================================================
+
+export interface TimeseriesQueryParams {
+  start_date: string
+  end_date?: string
+  group_by: 'provider' | 'model' | 'api_key' | 'instance'
+  interval?: 'hour' | 'day'
+}
+
+export interface TimeseriesResponse {
+  start_date: string
+  end_date: string
+  group_by: string
+  interval: string
+  data: TimeseriesDataPoint[]
+}
+
+export interface TimeseriesDataPoint {
+  label: string
+  timestamp: string
+  value: {
+    tokens: number
+    requests: number
+  }
+}
+
+export interface HealthTimeseriesQueryParams {
+  start_date: string
+  end_date?: string
+  instance?: string
+}
+
+export interface HealthTimeseriesResponse {
+  start_date: string
+  end_date: string
+  data: HealthDataPoint[]
+}
+
+export interface HealthDataPoint {
+  provider: string
+  instance: string
+  timestamp: string
+  health_status: string
+  failover_count: number
+}
+
+// ============================================================================
+// Instance Health Monitoring API Types
+// ============================================================================
+
+export interface InstanceHealthDetail {
+  provider: string
+  instance: string
+  is_healthy: boolean
+  duration_secs: number
+  downtime_last_24h_secs: number
+}
+
+export interface InstancesHealthResponse {
+  timestamp: string
+  instances: InstanceHealthDetail[]
 }

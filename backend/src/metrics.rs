@@ -77,13 +77,24 @@ pub fn record_request(api_key: &str, provider: &str, model: &str, endpoint: &str
 }
 
 /// Record tokens
-pub fn record_tokens(api_key: &str, provider: &str, model: &str, token_type: &str, count: u64) {
+pub fn record_tokens(api_key: &str, provider: &str, model: &str, token_type: &str, count: u64, instance: Option<&str>) {
+    let mut labels = vec![
+        ("api_key", api_key.to_string()),
+        ("provider", provider.to_string()),
+        ("model", model.to_string()),
+        ("type", token_type.to_string()),
+    ];
+
+    // Add instance label if provided
+    if let Some(inst) = instance {
+        if !inst.is_empty() {
+            labels.push(("instance", inst.to_string()));
+        }
+    }
+
     counter!(
         "llm_tokens_total",
-        "api_key" => api_key.to_string(),
-        "provider" => provider.to_string(),
-        "model" => model.to_string(),
-        "type" => token_type.to_string(),
+        &labels
     )
     .increment(count);
 }

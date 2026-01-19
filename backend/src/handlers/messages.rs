@@ -148,6 +148,7 @@ pub async fn handle_messages(
             &model,
             "input",
             body.usage.input_tokens,
+            None,
         );
         metrics::record_tokens(
             &auth.api_key_name,
@@ -155,6 +156,7 @@ pub async fn handle_messages(
             &model,
             "output",
             body.usage.output_tokens,
+            None,
         );
         metrics::record_duration(&auth.api_key_name, provider_name, &model, start.elapsed());
 

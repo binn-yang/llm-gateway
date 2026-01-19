@@ -138,8 +138,8 @@ async fn handle_openai_request(
 
         // Record metrics
         if let Some(usage) = &body.usage {
-            metrics::record_tokens(&auth.api_key_name, "openai", model, "input", usage.prompt_tokens);
-            metrics::record_tokens(&auth.api_key_name, "openai", model, "output", usage.completion_tokens);
+            metrics::record_tokens(&auth.api_key_name, "openai", model, "input", usage.prompt_tokens, None);
+            metrics::record_tokens(&auth.api_key_name, "openai", model, "output", usage.completion_tokens, None);
         }
         metrics::record_duration(&auth.api_key_name, "openai", model, start.elapsed());
 
@@ -237,8 +237,8 @@ async fn handle_anthropic_request(
 
         // Record metrics
         if let Some(usage) = &openai_body.usage {
-            metrics::record_tokens(&auth.api_key_name, "anthropic", model, "input", usage.prompt_tokens);
-            metrics::record_tokens(&auth.api_key_name, "anthropic", model, "output", usage.completion_tokens);
+            metrics::record_tokens(&auth.api_key_name, "anthropic", model, "input", usage.prompt_tokens, None);
+            metrics::record_tokens(&auth.api_key_name, "anthropic", model, "output", usage.completion_tokens, None);
         }
         metrics::record_duration(&auth.api_key_name, "anthropic", model, start.elapsed());
 
@@ -349,8 +349,8 @@ async fn handle_gemini_request(
 
         // Record metrics
         if let Some(usage) = &openai_body.usage {
-            metrics::record_tokens(&auth.api_key_name, "gemini", model, "input", usage.prompt_tokens);
-            metrics::record_tokens(&auth.api_key_name, "gemini", model, "output", usage.completion_tokens);
+            metrics::record_tokens(&auth.api_key_name, "gemini", model, "input", usage.prompt_tokens, None);
+            metrics::record_tokens(&auth.api_key_name, "gemini", model, "output", usage.completion_tokens, None);
         }
         metrics::record_duration(&auth.api_key_name, "gemini", model, start.elapsed());
 

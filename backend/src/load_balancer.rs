@@ -2,6 +2,7 @@ use crate::config::{AnthropicInstanceConfig, ProviderInstanceConfig};
 use dashmap::DashMap;
 use rand::seq::SliceRandom;
 use rand::Rng;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -471,6 +472,59 @@ impl LoadBalancer {
             }
         }
     }
+
+    /// Get health status of all instances
+    ///
+    /// Returns a vector of instance health information including current status,
+    /// duration in current state, and other metadata.
+    pub async fn get_all_instances_health(&self) -> Vec<InstanceHealthInfo> {
+        let health = self.health_state.read().await;
+        let now = Instant::now();
+
+        self.instances.iter()
+            .filter(|inst| inst.config.enabled())
+            .map(|inst| {
+                let inst_health = health.instances.get(inst.name.as_ref());
+                let is_healthy = inst_health.map(|h| h.is_healthy).unwrap_or(true);
+                let last_failure = inst_health.and_then(|h| h.last_failure_time);
+
+                // Calculate duration in current state
+                let duration_secs = if is_healthy {
+                    // If healthy, check if we have a last_failure time
+                    // If yes, calculate duration since recovery (now - failure_time - timeout)
+                    // If no, instance has never failed, duration is 0
+                    last_failure.map(|t| {
+                        let timeout = Duration::from_secs(inst.config.failure_timeout_seconds());
+                        let recovery_time = t + timeout;
+                        if now > recovery_time {
+                            now.duration_since(recovery_time).as_secs()
+                        } else {
+                            0
+                        }
+                    }).unwrap_or(0)
+                } else {
+                    // If unhealthy, duration is time since failure
+                    last_failure.map(|t| now.duration_since(t).as_secs()).unwrap_or(0)
+                };
+
+                InstanceHealthInfo {
+                    provider: self.provider_name.clone(),
+                    instance: inst.name.to_string(),
+                    is_healthy,
+                    duration_secs,
+                }
+            })
+            .collect()
+    }
+}
+
+/// Instance health information for API responses
+#[derive(Debug, Clone, Serialize)]
+pub struct InstanceHealthInfo {
+    pub provider: String,
+    pub instance: String,
+    pub is_healthy: bool,
+    pub duration_secs: u64,
 }
 
 #[cfg(test)]

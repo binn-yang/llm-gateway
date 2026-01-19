@@ -1,6 +1,7 @@
 use crate::error::AppError;
 use crate::load_balancer::{LoadBalancer, ProviderInstance};
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 

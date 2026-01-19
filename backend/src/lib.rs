@@ -9,6 +9,7 @@ pub mod load_balancer;
 pub mod logging;
 pub mod metrics;
 pub mod models;
+pub mod observability;
 pub mod providers;
 pub mod retry;
 pub mod router;

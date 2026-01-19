@@ -1,213 +1,272 @@
 <template>
-  <div class="space-y-6">
-    <!-- Metrics Cards -->
-    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-      <MetricsCard
-        v-for="card in metricsCards"
-        :key="card.key"
-        :title="card.title"
-        :value="card.value.value"
-        :icon="card.icon"
-        :color="card.color"
-      />
-    </div>
+  <div class="dashboard-container">
+    <!-- Header Section -->
+    <header class="dashboard-header">
+      <div class="header-left">
+        <h1 class="header-title">LLM GATEWAY</h1>
+        <div class="header-divider">//</div>
+        <div class="header-subtitle">MONITORING CONSOLE</div>
+      </div>
+      <div class="header-right">
+        <div class="timestamp">{{ currentTime }}</div>
+        <div class="status-badge" :class="{ online: isOnline }">
+          {{ isOnline ? 'CONNECTED' : 'DISCONNECTED' }}
+        </div>
+      </div>
+    </header>
 
-    <!-- Stats Section -->
-    <div class="glass-strong rounded-xl p-6">
-      <h2 class="text-xl font-bold text-white mb-4">Statistics</h2>
+    <!-- Summary Cards -->
+    <SummaryCards />
 
-      <div v-if="statsLoading" class="text-center text-white">
-        <el-icon class="is-loading"><Loading /></el-icon>
-        <p>Loading...</p>
+    <!-- Main Content Grid -->
+    <div class="main-grid">
+      <!-- Left Column -->
+      <div class="column-left">
+        <TokenUsageByApiKey />
+        <TokenUsageByInstance />
       </div>
 
-      <div v-else-if="statsError" class="text-red-300">
-        <p>Error loading stats</p>
-      </div>
-
-      <div
-        v-else-if="statsData"
-        class="grid grid-cols-1 md:grid-cols-2 gap-6"
-      >
-        <div>
-          <h3 class="text-lg font-semibold text-white mb-2">Requests</h3>
-          <p class="text-3xl font-bold text-white">
-            {{ formatNumber(statsData.total_requests) }}
-          </p>
-        </div>
-
-        <div>
-          <h3 class="text-lg font-semibold text-white mb-2">Tokens</h3>
-          <p class="text-3xl font-bold text-white">
-            {{ formatNumber(statsData.total_tokens) }}
-          </p>
-        </div>
-
-        <div>
-          <h3 class="text-lg font-semibold text-white mb-2">Avg Latency</h3>
-          <p class="text-3xl font-bold text-white">
-            {{ formatLatency(statsData.avg_latency_seconds) }}
-          </p>
-        </div>
-
-        <div>
-          <h3 class="text-lg font-semibold text-white mb-2">Error Rate</h3>
-          <p class="text-3xl font-bold text-white">
-            {{ formatPercent(statsData.error_rate) }}
-          </p>
-        </div>
+      <!-- Right Column -->
+      <div class="column-right">
+        <ProviderHealthTable />
       </div>
     </div>
 
-    <!-- Requests Chart -->
-    <RequestsChart />
-
-    <!-- Instance Health -->
-    <InstanceHealth />
-
-    <!-- Provider Stats -->
-    <div v-if="statsData?.by_provider" class="glass-strong rounded-xl p-6">
-      <h2 class="text-xl font-bold text-white mb-4">By Provider</h2>
-
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div
-          v-for="(stats, provider) in statsData.by_provider"
-          :key="provider"
-          class="bg-white/10 rounded-lg p-4"
-        >
-          <h3 class="text-lg font-semibold text-white capitalize mb-2">
-            {{ provider }}
-          </h3>
-          <div class="space-y-2 text-white">
-            <p>Requests: {{ formatNumber(stats.requests) }}</p>
-            <p>Tokens: {{ formatNumber(stats.tokens) }}</p>
-            <p>Latency: {{ formatLatency(stats.avg_latency_seconds) }}</p>
-            <p>Error Rate: {{ formatPercent(stats.error_rate) }}</p>
-          </div>
-        </div>
+    <!-- Footer -->
+    <footer class="dashboard-footer">
+      <div class="footer-section">
+        <span class="footer-label">VERSION</span>
+        <span class="footer-value">0.3.0</span>
       </div>
-    </div>
+      <div class="footer-divider">|</div>
+      <div class="footer-section">
+        <span class="footer-label">UPTIME</span>
+        <span class="footer-value">{{ uptime }}</span>
+      </div>
+      <div class="footer-divider">|</div>
+      <div class="footer-section">
+        <span class="footer-label">LAST UPDATE</span>
+        <span class="footer-value">{{ lastUpdate }}</span>
+      </div>
+    </footer>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { useMetricsStore } from '@/stores/metrics'
-import { usePolling } from '@/composables/usePolling'
-import { dashboardApi, type StatsResponse } from '@/api/dashboard'
-import MetricsCard from '@/components/dashboard/MetricsCard.vue'
-import RequestsChart from '@/components/dashboard/RequestsChart.vue'
-import InstanceHealth from '@/components/dashboard/InstanceHealth.vue'
-import { Loading } from '@element-plus/icons-vue'
+import SummaryCards from '@/components/dashboard/SummaryCards.vue'
+import TokenUsageByApiKey from '@/components/dashboard/TokenUsageByApiKey.vue'
+import TokenUsageByInstance from '@/components/dashboard/TokenUsageByInstance.vue'
+import ProviderHealthTable from '@/components/dashboard/ProviderHealthTable.vue'
 
-const metricsStore = useMetricsStore()
+const currentTime = ref('')
+const isOnline = ref(navigator.onLine)
+const uptime = ref('00:00:00')
+const lastUpdate = ref('-')
+let startTime = Date.now()
+let timeInterval: number
+let uptimeInterval: number
 
-// Stats polling
-const { data: statsData, isLoading: statsLoading, error: statsError } =
-  usePolling<StatsResponse>({
-    fn: () => dashboardApi.getStats({ group_by: 'provider' }),
-    interval: 5000,
-    autoStart: true,
-  })
-
-// Metrics cards configuration
-interface MetricsCard {
-  key: string
-  title: string
-  value: { value: string }
-  icon: string
-  color: 'primary' | 'secondary' | 'accent' | 'danger'
+function updateTime() {
+  const now = new Date()
+  currentTime.value = now.toUTCString().replace('GMT', 'UTC')
+  lastUpdate.value = now.toTimeString().split(' ')[0]
 }
 
-const requestsValue = ref('0')
-const tokensValue = ref('0')
-const latencyValue = ref('0s')
-const errorsValue = ref('0%')
+function updateUptime() {
+  const elapsed = Date.now() - startTime
+  const seconds = Math.floor(elapsed / 1000)
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const secs = seconds % 60
 
-const metricsCards: MetricsCard[] = [
-  {
-    key: 'requests',
-    title: 'Total Requests',
-    value: requestsValue,
-    icon: 'Document',
-    color: 'primary',
-  },
-  {
-    key: 'tokens',
-    title: 'Total Tokens',
-    value: tokensValue,
-    icon: 'ChatDotRound',
-    color: 'secondary',
-  },
-  {
-    key: 'latency',
-    title: 'Avg Latency',
-    value: latencyValue,
-    icon: 'Timer',
-    color: 'accent',
-  },
-  {
-    key: 'errors',
-    title: 'Error Rate',
-    value: errorsValue,
-    icon: 'Warning',
-    color: 'danger',
-  },
-]
-
-// Update metrics from store
-function updateMetrics() {
-  const requests = metricsStore.getMetricValue('llm_requests_total')
-  const tokens = metricsStore.getMetricValue('llm_tokens_total')
-
-  requestsValue.value = formatNumber(requests)
-  tokensValue.value = formatNumber(tokens)
-
-  const data = statsData.value
-  if (data) {
-    latencyValue.value = formatLatency(data.avg_latency_seconds)
-    errorsValue.value = formatPercent(data.error_rate)
-  }
+  uptime.value = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
 }
 
-// Watch stats data changes and update metrics
-function watchStats() {
-  updateMetrics()
+function handleOnlineStatus() {
+  isOnline.value = navigator.onLine
 }
 
-// Fetch metrics on mount and update periodically
 onMounted(() => {
-  metricsStore.fetchMetrics()
-  updateMetrics()
+  updateTime()
+  updateUptime()
 
-  const interval = setInterval(() => {
-    metricsStore.fetchMetrics()
-    watchStats()
-  }, 5000)
+  timeInterval = window.setInterval(updateTime, 1000)
+  uptimeInterval = window.setInterval(updateUptime, 1000)
 
-  onUnmounted(() => {
-    clearInterval(interval)
-  })
+  window.addEventListener('online', handleOnlineStatus)
+  window.addEventListener('offline', handleOnlineStatus)
 })
 
-// Formatters
-function formatNumber(num: number): string {
-  if (num >= 1000000) {
-    return `${(num / 1000000).toFixed(1)}M`
-  } else if (num >= 1000) {
-    return `${(num / 1000).toFixed(1)}K`
-  }
-  return num.toString()
-}
+onUnmounted(() => {
+  clearInterval(timeInterval)
+  clearInterval(uptimeInterval)
 
-function formatLatency(seconds: number): string {
-  if (seconds < 1) {
-    return `${(seconds * 1000).toFixed(0)}ms`
-  }
-  return `${seconds.toFixed(2)}s`
-}
-
-function formatPercent(rate: number): string {
-  return `${(rate * 100).toFixed(2)}%`
-}
+  window.removeEventListener('online', handleOnlineStatus)
+  window.removeEventListener('offline', handleOnlineStatus)
+})
 </script>
+
+<style scoped>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+.dashboard-container {
+  min-height: 100vh;
+  background: #0a0a0a;
+  padding: 1.5rem;
+  font-family: 'IBM Plex Sans', monospace;
+}
+
+/* Header */
+.dashboard-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid #1a1a1a;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.header-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #e0e0e0;
+  letter-spacing: 0.05em;
+  margin: 0;
+}
+
+.header-divider {
+  font-size: 1rem;
+  color: #333;
+  font-weight: 300;
+}
+
+.header-subtitle {
+  font-family: 'IBM Plex Sans', monospace;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  color: #444;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.timestamp {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: #555;
+  letter-spacing: 0.05em;
+}
+
+.status-badge {
+  font-family: 'IBM Plex Sans', monospace;
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid #333;
+  color: #555;
+}
+
+.status-badge.online {
+  border-color: #00ff41;
+  color: #00ff41;
+  background: rgba(0, 255, 65, 0.08);
+}
+
+/* Main Grid */
+.main-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.column-left,
+.column-right {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* Footer */
+.dashboard-footer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid #1a1a1a;
+}
+
+.footer-section {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.footer-label {
+  font-family: 'IBM Plex Sans', monospace;
+  font-size: 0.55rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: #444;
+}
+
+.footer-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.65rem;
+  font-weight: 500;
+  color: #666;
+}
+
+.footer-divider {
+  font-size: 0.7rem;
+  color: #222;
+  margin: 0 0.25rem;
+}
+
+/* CRT Scanline Effect */
+.dashboard-container::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.15),
+    rgba(0, 0, 0, 0.15) 1px,
+    transparent 1px,
+    transparent 2px
+  );
+  pointer-events: none;
+  z-index: 1000;
+  opacity: 0.3;
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+  .main-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+}
+</style>

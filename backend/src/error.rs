@@ -107,6 +107,12 @@ impl From<serde_json::Error> for AppError {
     }
 }
 
+impl From<sqlx::Error> for AppError {
+    fn from(err: sqlx::Error) -> Self {
+        Self::InternalError(format!("Database error: {}", err))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

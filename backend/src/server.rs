@@ -1,6 +1,7 @@
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use axum::{extract::DefaultBodyLimit, middleware, routing::{get, post}, Router};
+use sqlx::SqlitePool;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -11,6 +12,7 @@ use crate::{
     handlers,
     load_balancer::{LoadBalancer, ProviderInstance, ProviderInstanceConfigEnum},
     metrics,
+    observability::MetricsSnapshotWriter,
     router::{ModelRouter, Provider},
     signals::setup_signal_handlers,
     static_files,
@@ -32,6 +34,55 @@ pub async fn start_server(config: Config) -> Result<()> {
     // Initialize metrics
     tracing::info!("Initializing Prometheus metrics...");
     let metrics_handle = Arc::new(metrics::init_metrics());
+
+    // Initialize observability (SQLite-based metrics snapshot writer)
+    let (db_pool, observability_writer) = if config.observability.enabled {
+        tracing::info!(
+            database = %config.observability.database_path,
+            "Initializing observability database"
+        );
+
+        // Create SQLite connection pool
+        // Ensure parent directory exists
+        if let Some(parent) = std::path::Path::new(&config.observability.database_path).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Use SqliteConnectOptions for better control
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&config.observability.database_path)
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+        let pool = SqlitePool::connect_with(options)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to connect to database: {}", e))?;
+
+        // Run migrations
+        tracing::info!("Running database migrations...");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to run migrations: {}", e))?;
+
+        // Create metrics snapshot writer
+        let writer = MetricsSnapshotWriter::new(
+            metrics_handle.clone(),
+            pool.clone(),
+        );
+
+        // Start background snapshot task (every 60 seconds)
+        let writer_clone = writer.clone();
+        tokio::spawn(async move {
+            tracing::info!("Starting metrics snapshot task (60s interval)");
+            writer_clone.spawn_snapshot_task(60).await;
+        });
+
+        (Some(pool), Some(writer))
+    } else {
+        tracing::info!("Observability disabled, skipping SQLite metrics storage");
+        (None, None)
+    };
 
     // Wrap config in ArcSwap for atomic reload support
     let config_swap = Arc::new(ArcSwap::from_pointee(config.clone()));
@@ -55,11 +106,11 @@ pub async fn start_server(config: Config) -> Result<()> {
         config: config_swap.clone(),
         router,
         http_client: (*http_client).clone(),
-        load_balancers,
+        load_balancers: load_balancers.clone(),
     };
 
     // Build the Axum router
-    let app = create_router(config_swap.clone(), app_state, metrics_handle);
+    let app = create_router(config_swap.clone(), app_state, metrics_handle, db_pool, load_balancers.clone());
 
     // Create socket address
     let addr = SocketAddr::from((
@@ -99,6 +150,8 @@ fn create_router(
     config: Arc<arc_swap::ArcSwap<Config>>,
     app_state: handlers::chat_completions::AppState,
     metrics_handle: Arc<metrics_exporter_prometheus::PrometheusHandle>,
+    db_pool: Option<SqlitePool>,
+    load_balancers: Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<LoadBalancer>>>>,
 ) -> Router {
     // Create authenticated routes
     let auth_routes = Router::new()
@@ -121,12 +174,10 @@ fn create_router(
     let dashboard_state = handlers::dashboard_api::DashboardState {
         config: config.clone(),
         metrics_handle: metrics_handle.clone(),
+        db_pool,
+        load_balancers: load_balancers.clone(),
     };
-    let dashboard_routes = Router::new()
-        .route("/metrics", get(handlers::dashboard_api::get_metrics))
-        .route("/stats", get(handlers::dashboard_api::get_stats))
-        .route("/config", get(handlers::dashboard_api::get_config))
-        .with_state(dashboard_state);
+    let dashboard_routes = handlers::dashboard_api::create_dashboard_router(dashboard_state);
 
     // Build app with all routes
     let app = Router::new()

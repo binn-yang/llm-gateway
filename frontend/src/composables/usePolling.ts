@@ -25,6 +25,9 @@ export interface PollingOptions<T> {
   autoStart?: boolean
 }
 
+// Export the options as a type for external use
+export type UsePollingOptions<T> = PollingOptions<T>
+
 export function usePolling<T>(options: PollingOptions<T>) {
   const {
     fn,
