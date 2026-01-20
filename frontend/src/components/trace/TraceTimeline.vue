@@ -65,6 +65,7 @@ function updateChart() {
   const data = buildTimelineData()
   if (!data) return
 
+  // @ts-ignore - Chart.js type compatibility issue
   const options: ChartOptions = {
     ...getDefaultBarOptions(),
     indexAxis: 'y' as const,

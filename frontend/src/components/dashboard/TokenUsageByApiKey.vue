@@ -17,7 +17,7 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted } from 'vue'
 import { dashboardApi, type TimeseriesResponse, type TimeseriesDataPoint } from '@/api/dashboard'
-import { subDays, format } from 'date-fns'
+import { subDays, format, addDays } from 'date-fns'
 import { usePolling } from '@/composables/usePolling'
 
 const chartRef = ref<HTMLCanvasElement>()
@@ -26,6 +26,7 @@ let chartInstance: any = null
 const { data: responseData } = usePolling<TimeseriesResponse>({
   fn: () => dashboardApi.getTimeseriesTokens({
     start_date: format(subDays(new Date(), 1), 'yyyy-MM-dd'),
+    end_date: format(addDays(new Date(), 1), 'yyyy-MM-dd'),
     group_by: 'api_key',
     interval: 'hour',
   }),
@@ -83,9 +84,49 @@ function groupDataByApiKey(data: TimeseriesDataPoint[]) {
   return Array.from(groups.entries()).map(([label, data]) => ({ label, data }))
 }
 
+// Convert UTC timestamp to local time for display
+function convertUTCToLocal(utcTimestamp: string): string {
+  // Parse the timestamp (format: "2026-01-19T13:00:00")
+  // The timestamp is already in local time from backend, just parse and format it
+  const date = new Date(utcTimestamp)
+
+  // Format as local time
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+
+  return `${year}-${month}-${day}T${hours}:${minutes}` as string
+}
+
 function extractUniqueTimestamps(data: TimeseriesDataPoint[]): string[] {
   const timestamps = new Set<string>()
-  data.forEach(point => timestamps.add(point.timestamp))
+
+  // Extract timestamps from data
+  data.forEach(point => {
+    // Convert UTC to local time for display
+    const localTimestamp = convertUTCToLocal(point.timestamp)
+    timestamps.add(localTimestamp)
+  })
+
+  // Ensure we have all hours from the latest data point to the next hour
+  const sortedTimestamps = Array.from(timestamps).sort()
+  if (sortedTimestamps.length > 0) {
+    const latest = sortedTimestamps[sortedTimestamps.length - 1]
+    // Parse the latest timestamp and add the next hour
+    const match = latest?.match(/(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/)
+    if (match) {
+      const date = match[1]!
+      const hour = match[2]!
+      const minute = match[3] || '00'
+      const hourNum = parseInt(hour, 10)
+      const nextHourNum = (hourNum + 1) % 24
+      const nextHourStr = String(nextHourNum).padStart(2, '0')
+      timestamps.add(`${date}T${nextHourStr}:${minute}`)
+    }
+  }
+
   return Array.from(timestamps).sort()
 }
 
@@ -98,7 +139,7 @@ function getColor(index: number, alpha: number = 1): string {
     `rgba(147, 51, 234, ${alpha})`,
     `rgba(255, 215, 0, ${alpha})`,
   ]
-  return colors[index % colors.length]
+  return colors[index % colors.length]!
 }
 
 function createChart() {
@@ -157,7 +198,7 @@ function createChart() {
             size: 10,
           },
           callbacks: {
-            label: (context) => {
+            label: (context: any) => {
               const value = context.parsed.y
               return `${formatNumber(value)} tokens`
             },
@@ -192,7 +233,7 @@ function createChart() {
               size: 10,
             },
             color: '#555',
-            callback: (value) => formatNumber(value as number),
+            callback: (value: any) => formatNumber(value as number),
           },
         },
       },

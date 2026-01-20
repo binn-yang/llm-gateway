@@ -70,7 +70,7 @@ fn extract_bearer_token(auth_header: &str) -> Result<&str, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ApiKeyConfig, Config, MetricsConfig, ProvidersConfig, ServerConfig, RoutingConfig, ProviderInstanceConfig, AnthropicInstanceConfig};
+    use crate::config::{ApiKeyConfig, Config, ProvidersConfig, ServerConfig, RoutingConfig, ProviderInstanceConfig, AnthropicInstanceConfig};
     use std::collections::HashMap;
 
     #[test]
@@ -157,11 +157,6 @@ mod tests {
                     failure_timeout_seconds: 60,
                     weight: 100,
                 }],
-            },
-            metrics: MetricsConfig {
-                enabled: true,
-                endpoint: "/metrics".to_string(),
-                include_api_key_hash: true,
             },
             observability: crate::config::ObservabilityConfig::default(),
         }

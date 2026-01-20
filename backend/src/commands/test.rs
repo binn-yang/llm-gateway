@@ -88,15 +88,6 @@ pub fn execute() -> Result<()> {
     }
     println!();
 
-    println!("  {}: {}", "Metrics", if cfg.metrics.enabled {
-        "enabled"
-    } else {
-        "disabled"
-    });
-    if cfg.metrics.enabled {
-        println!("    Endpoint: {}", cfg.metrics.endpoint);
-    }
-
     info!("Configuration validation completed successfully");
     Ok(())
 }

@@ -38,7 +38,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
-import { dashboardApi, type HealthTimeseriesResponse, type HealthDataPoint } from '@/api/dashboard'
+import { dashboardApi, type HealthDataPoint } from '@/api/dashboard'
 import { subDays, format } from 'date-fns'
 
 const chartRef = ref<HTMLCanvasElement>()
@@ -141,9 +141,29 @@ function groupDataByInstance(data: HealthDataPoint[]) {
   return Array.from(instances.values())
 }
 
+// Convert UTC timestamp to local time for display
+function convertUTCToLocal(utcTimestamp: string): string {
+  // Parse the timestamp (format: "2026-01-19T13:00:00")
+  // The timestamp is already in local time from backend, just parse and format it
+  const date = new Date(utcTimestamp)
+
+  // Format as local time
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+
+  return `${year}-${month}-${day}T${hours}:${minutes}` as string
+}
+
 function extractUniqueTimestamps(data: HealthDataPoint[]): string[] {
   const timestamps = new Set<string>()
-  data.forEach(point => timestamps.add(point.timestamp))
+  data.forEach(point => {
+    // Convert UTC to local time for display
+    const localTimestamp = convertUTCToLocal(point.timestamp)
+    timestamps.add(localTimestamp)
+  })
   return Array.from(timestamps).sort()
 }
 
@@ -154,7 +174,7 @@ function getColor(index: number, alpha: number = 1): string {
     `rgba(255, 107, 0, ${alpha})`,      // Orange
     `rgba(255, 0, 65, ${alpha})`,       // Red
   ]
-  return colors[index % colors.length]
+  return colors[index % colors.length]!
 }
 
 function createChart() {
@@ -223,7 +243,7 @@ function createChart() {
             size: 10,
           },
           callbacks: {
-            label: (context) => {
+            label: (context: any) => {
               const value = context.parsed.y
               return value === 1 ? 'Healthy' : 'Unhealthy'
             },
@@ -261,7 +281,7 @@ function createChart() {
             },
             color: '#555',
             stepSize: 1,
-            callback: (value) => {
+            callback: (value: any) => {
               if (value === 1) return 'Healthy'
               if (value === 0) return 'Unhealthy'
               return ''

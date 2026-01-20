@@ -183,7 +183,7 @@ pub fn send_signal_to_pid(_pid: u32, _signal_kind: ()) -> Result<()> {
 mod tests {
     use super::*;
     use crate::config::{
-        AnthropicInstanceConfig, ApiKeyConfig, DiscoveryConfig, MetricsConfig, ProviderInstanceConfig,
+        AnthropicInstanceConfig, ApiKeyConfig, DiscoveryConfig, ProviderInstanceConfig,
         ProvidersConfig, RoutingConfig, ServerConfig,
     };
     use std::collections::HashMap;
@@ -247,11 +247,6 @@ mod tests {
                     failure_timeout_seconds: 60,
                     weight: 100,
                 }],
-            },
-            metrics: MetricsConfig {
-                enabled: true,
-                endpoint: "/metrics".to_string(),
-                include_api_key_hash: true,
             },
             observability: crate::config::ObservabilityConfig::default(),
         }

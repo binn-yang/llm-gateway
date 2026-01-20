@@ -8,10 +8,10 @@ LLM Gateway is a high-performance Rust proxy that provides multiple API formats 
 - **Unified OpenAI-compatible API** (`/v1/chat/completions`) - works with all providers via automatic protocol conversion
 - **Native Anthropic Messages API** (`/v1/messages`) - direct passthrough for Claude models without conversion overhead
 
-It features multi-instance load balancing with sticky sessions, automatic failover, and zero external dependencies (no Redis/database).
+It features multi-instance load balancing with sticky sessions, automatic failover, SQLite-based observability system with web dashboard, and complete token tracking including Anthropic prompt caching metrics.
 
-**Version**: 0.3.0
-**Stack**: Rust + Axum + Tokio + Prometheus
+**Version**: 0.4.0
+**Stack**: Backend (Rust + Axum + Tokio + SQLite) + Frontend (Vue 3 + TypeScript + Chart.js)
 
 ## Essential Commands
 
@@ -182,21 +182,108 @@ failure_timeout_seconds = 60      # Auto-recovery timeout
 
 **Important**: Providers are now **arrays** (`Vec<ProviderInstanceConfig>`), not single instances.
 
-#### 5. Metrics System
+#### 5. Observability System (NEW in v0.4.0)
 
-**File**: `src/metrics.rs`
+**Files**: `src/observability/request_logger.rs`, `backend/migrations/*.sql`
 
-Prometheus metrics with four dimensions: `api_key`, `provider`, `model`, `instance`
+SQLite-based observability system with async non-blocking writes:
 
-**Key Metrics**:
-- `llm_requests_total` - request count
-- `llm_tokens_total` - token usage (input/output)
-- `llm_request_duration_seconds` - latency histogram
-- `llm_instance_health_status` - instance health (1=healthy, 0=unhealthy)
-- `llm_instance_requests_total` - per-instance request count with status
-- `llm_gateway_session_count` - active sticky sessions
+**Architecture**:
+- **RequestLogger**: Async logger with ring buffer (10,000 events)
+- **Batch Writing**: 100 events per batch, 100ms flush interval
+- **Non-blocking**: Uses tokio channels, never blocks request handling
+- **Data Retention**: Automatic cleanup (logs 7 days, traces 7 days, metrics 30 days)
 
-Metrics are recorded in `retry.rs` during request execution.
+**Database Tables**:
+- **requests**: Per-request logs with token usage and performance metrics
+- **spans**: Distributed tracing spans (not yet fully implemented)
+
+**Key Fields in requests table**:
+- Basic: `request_id`, `timestamp`, `api_key_name`, `provider`, `instance`, `model`, `endpoint`
+- Token Usage: `input_tokens`, `output_tokens`, `total_tokens`
+- **Caching**: `cache_creation_input_tokens`, `cache_read_input_tokens` (Anthropic prompt caching)
+- Performance: `duration_ms`, `status`, `error_type`, `error_message`
+
+**Usage Pattern**:
+```rust
+// In handlers
+let logger = request_logger.clone();
+logger.log_request(RequestEvent {
+    request_id: request_id.clone(),
+    timestamp: Utc::now().timestamp_millis(),
+    // ... other fields ...
+    input_tokens: tokens.0 as i64,
+    output_tokens: tokens.1 as i64,
+    cache_creation_input_tokens: tokens.2 as i64,
+    cache_read_input_tokens: tokens.3 as i64,
+    // ...
+}).await;
+```
+
+#### 6. Token Tracking (Enhanced in v0.4.0)
+
+**Files**: `src/streaming.rs`, `src/handlers/*`
+
+Complete token tracking including Anthropic prompt caching metrics:
+
+**StreamingUsageTracker**:
+- Tracks 4 token types: input, output, cache_creation, cache_read
+- **Unified Extraction**: All tokens extracted from `message_delta` event for compatibility
+- **Provider Compatibility**: Works with Anthropic official API and GLM provider
+- **Non-blocking**: Uses tokio watch channel for completion notification
+
+**Key Methods**:
+- `set_full_usage()`: Set all 4 token types from message_delta (preferred method)
+- `set_input_usage()`: Legacy method for partial updates
+- `wait_for_completion()`: Async wait for token data (no polling)
+
+**Extraction Strategy** (Optimized for GLM compatibility):
+```rust
+// OpenAI-compatible API stream (src/streaming.rs ~420)
+"message_delta" => {
+    if let Some(usage) = &anthropic_event.usage {
+        tracker.set_full_usage(
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_creation_input_tokens,
+            usage.cache_read_input_tokens,
+        );
+    }
+}
+```
+
+**Why from message_delta only**:
+- Anthropic official API: Complete data in both message_start and message_delta (redundant)
+- GLM provider: message_start returns zeros, message_delta has complete data
+- Solution: Unified extraction from message_delta works for all implementations
+
+**Caching Cost Analysis**:
+- `cache_creation_input_tokens`: Tokens used to create cache (+25% cost)
+- `cache_read_input_tokens`: Tokens read from cache (-90% cost)
+- Regular tokens: `input_tokens - cache_creation - cache_read`
+
+#### 7. Metrics System
+
+**Files**: `src/observability/*` (SQLite-based)
+
+**SQLite-Based Metrics**:
+
+All metrics are stored in SQLite for unified observability:
+- **Per-request granularity**: Every request logged with full token usage details
+- **Cache metrics**: Tracks cache_creation_input_tokens and cache_read_input_tokens
+- **Instance health**: Recorded per request with provider/instance labels
+- **Time-series data**: Queryable via SQL for custom analytics
+- **Automatic retention**: 30-day retention policy with daily cleanup
+- **Dashboard integration**: Powers Vue 3 frontend charts via REST API
+
+**Key Metrics Available**:
+- Request count and status by provider/model/api_key
+- Token usage (input/output/cache) with cost analysis
+- Request duration and latency percentiles
+- Instance health status and failover events
+- Active session tracking (via load balancer state)
+
+Metrics are recorded in `src/observability/request_logger.rs` with async batch writes (100 events per batch, 100ms flush interval).
 
 ### Handlers
 
@@ -225,6 +312,47 @@ The gateway provides two API formats through different handlers:
   - Claude Code and official Anthropic SDKs
   - Maximum compatibility with Anthropic-specific features
   - Avoiding protocol conversion overhead
+
+### Frontend Dashboard (NEW in v0.4.0)
+
+**Directory**: `frontend/`
+
+**Stack**: Vue 3 + TypeScript + Vite + Chart.js + Tailwind CSS
+
+**Features**:
+- **Real-time Token Usage Charts**: Visualize token consumption over time
+- **Provider Health Monitoring**: Track instance health status and failover events
+- **API Key Analytics**: Per-key token usage and cost estimation
+- **Trace Timeline**: Visualize request traces (spans) with performance breakdown
+- **Cost Calculator**: Estimate costs based on token usage and caching
+
+**Key Components** (`frontend/src/components/`):
+- `dashboard/TokenUsageTimeseries.vue`: Time-series token usage chart
+- `dashboard/TokenUsageByApiKey.vue`: Per-key token breakdown
+- `dashboard/TokenUsageByInstance.vue`: Per-instance token distribution
+- `dashboard/InstanceHealthTimeseries.vue`: Health status over time
+- `dashboard/ProviderHealthChart.vue`: Current provider health matrix
+- `trace/TraceTimeline.vue`: Request trace visualization
+
+**API Endpoints**:
+- `GET /api/requests/time-series`: Token usage time series
+- `GET /api/requests/by-api-key`: Per-key aggregation
+- `GET /api/requests/by-instance`: Per-instance aggregation
+- `GET /api/instances/health-time-series`: Instance health over time
+- `GET /api/instances/current-health`: Current health status
+
+**Development**:
+```bash
+cd frontend
+npm install
+npm run dev        # Development server on http://localhost:3000
+npm run build      # Production build
+```
+
+**Deployment**:
+- Frontend serves from `frontend/dist/` via backend's static file handler
+- Access at `http://localhost:8080/` (root path)
+- API routes under `/api/*` are proxied to backend
 
 ## Configuration Patterns
 
@@ -267,6 +395,32 @@ enabled = true
 cache_ttl_seconds = 3600
 providers_with_listing = ["openai"]  # Providers supporting model listing API
 ```
+
+### Observability Configuration
+
+```toml
+[observability]
+enabled = true
+database_path = "./data/observability.db"
+
+# Performance tuning
+[observability.performance]
+batch_size = 100              # Events per batch write
+flush_interval_ms = 100       # Max time before flushing
+max_buffer_size = 10000       # Ring buffer size
+
+# Data retention policies (automatic cleanup)
+[observability.retention]
+logs_days = 7                     # Keep request logs for 7 days
+spans_days = 7                    # Keep trace spans for 7 days
+cleanup_hour = 3                  # Run cleanup at 3 AM daily (0-23)
+```
+
+**Key Configuration Options**:
+- `batch_size`: Larger = more throughput, higher memory
+- `flush_interval_ms`: Smaller = more real-time, more writes
+- `max_buffer_size`: Ring buffer prevents blocking on backpressure
+- Retention policies: Balance storage vs historical analysis needs
 
 ## Testing Patterns
 

@@ -1,8 +1,10 @@
 # LLM Gateway
 
-A high-performance, minimal LLM proxy gateway written in Rust that provides multiple API formats for LLM providers (OpenAI, Anthropic Claude, Google Gemini):
+A high-performance LLM proxy gateway written in Rust that provides multiple API formats for LLM providers (OpenAI, Anthropic Claude, Google Gemini):
 - **Unified OpenAI-compatible API** (`/v1/chat/completions`) - works with all providers via automatic protocol conversion
 - **Native Anthropic Messages API** (`/v1/messages`) - direct passthrough for Claude models without conversion overhead
+- **SQLite-based Observability** - Complete request logging with token tracking and performance metrics
+- **Web Dashboard** - Real-time monitoring and analytics UI built with Vue 3
 
 ## Features
 
@@ -14,9 +16,18 @@ A high-performance, minimal LLM proxy gateway written in Rust that provides mult
 - **Multi-Instance Load Balancing**: Each provider supports multiple backend instances with priority-based selection
 - **Sticky Sessions**: API key-level session affinity maximizes provider-side KV cache hits
 - **Automatic Failover**: Single request failure triggers instant failover with auto-recovery
-- **Zero Dependencies**: No database, Redis, or cache required - just binary + config file
+- **SQLite-based Observability**:
+  - Complete request logging with token usage tracking
+  - Anthropic prompt caching metrics (cache creation/read tokens)
+  - Automatic data retention policies (7-30 days)
+  - Non-blocking async batch writes
+- **Web Dashboard** (NEW):
+  - Real-time token usage charts and analytics
+  - Provider instance health monitoring
+  - Per-API-key cost estimation
+  - Request trace visualization
 - **Static Authentication**: API key-based auth configured in TOML
-- **Prometheus Metrics**: Four-dimension metrics with instance-level observability
+- **SQLite-based Metrics**: Unified observability with per-request granularity and automatic retention
 - **Streaming Support**: Full SSE support with real-time protocol conversion
 - **Cloud Native**: Docker ready, health checks, structured JSON logging
 - **Horizontal Scaling**: Nginx-compatible for multi-machine deployments
@@ -315,19 +326,62 @@ docker run -p 8080:8080 -v $(pwd)/config.toml:/app/config.toml llm-gateway
 ### 3. Run from source
 
 ```bash
+# Backend only
+cd backend
 cargo run --release
+
+# With frontend (for development)
+cd frontend
+npm install
+npm run dev        # Frontend dev server on http://localhost:3000
+
+# Production build (frontend)
+cd frontend
+npm run build      # Builds to frontend/dist/
+cd ../backend
+cargo run --release  # Serves frontend from /
 ```
 
+### 4. Access the Dashboard
+
+Once running, access the web dashboard at:
+```
+http://localhost:8080/
+```
+
+The dashboard provides:
+- Real-time token usage monitoring
+- Provider instance health status
+- Per-API-key analytics and cost estimation
+- Request trace visualization
+
 ## API Endpoints
+
+### Core LLM APIs
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/v1/chat/completions` | POST | Yes | OpenAI-compatible chat completion (all providers) |
+| `/v1/messages` | POST | Yes | Native Anthropic Messages API (Claude models only) |
+| `/v1/models` | GET | Yes | List available models |
+
+### Monitoring & Observability
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
 | `/health` | GET | No | Health check |
 | `/ready` | GET | No | Readiness check |
-| `/metrics` | GET | No | Prometheus metrics |
-| `/v1/chat/completions` | POST | Yes | OpenAI-compatible chat completion (all providers) |
-| `/v1/messages` | POST | Yes | Native Anthropic Messages API (Claude models only) |
-| `/v1/models` | GET | Yes | List available models |
+
+### Dashboard APIs (NEW)
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/` | GET | No | Web Dashboard (Vue 3 SPA) |
+| `/api/requests/time-series` | GET | No | Token usage time series data |
+| `/api/requests/by-api-key` | GET | No | Per-API-key token aggregation |
+| `/api/requests/by-instance` | GET | No | Per-instance token distribution |
+| `/api/instances/health-time-series` | GET | No | Instance health over time |
+| `/api/instances/current-health` | GET | No | Current instance health status |
 
 ## Usage Examples
 
@@ -386,25 +440,70 @@ curl -X POST http://localhost:8080/v1/messages \
   }'
 ```
 
-## Monitoring
+## Observability & Dashboard
 
-### Prometheus Metrics
+### Web Dashboard
 
-Access metrics at `/metrics`:
+Access the dashboard at `http://localhost:8080/` to monitor your gateway in real-time:
 
-```promql
-# Request count
-llm_requests_total{api_key="my-app", provider="anthropic", model="claude-3-5-sonnet"}
+**Features**:
+- **Token Usage Analytics**: Visualize token consumption over time with interactive charts
+- **Cost Estimation**: Calculate costs based on token usage and prompt caching
+- **Provider Health**: Monitor instance health status and failover events
+- **API Key Breakdown**: Per-key token usage and cost analysis
+- **Request Traces**: Visualize request traces with performance breakdown
 
-# Token usage
-llm_tokens_total{api_key="my-app", provider="anthropic", model="claude-3-5-sonnet", type="input"}
+**Technology**:
+- Built with Vue 3 + TypeScript + Chart.js
+- Real-time data from SQLite database
+- Responsive design with Tailwind CSS
 
-# Request duration
-llm_request_duration_seconds{api_key="my-app", provider="anthropic", model="claude-3-5-sonnet"}
+### SQLite-based Observability
 
-# Error count
-llm_errors_total{api_key="my-app", provider="anthropic", error_type="rate_limit"}
+All requests are logged to SQLite database (`./data/observability.db`) with complete details:
+
+**Request Data Includes**:
+- Basic info: request_id, timestamp, api_key_name, provider, instance, model, endpoint
+- Token usage: input_tokens, output_tokens, total_tokens
+- **Caching metrics**: cache_creation_input_tokens, cache_read_input_tokens (Anthropic only)
+- Performance: duration_ms, status, error_type, error_message
+
+**Query Examples**:
+```sql
+-- Token usage by provider (last 7 days)
+SELECT provider, model,
+       SUM(input_tokens) as total_input,
+       SUM(output_tokens) as total_output,
+       SUM(cache_read_input_tokens) as cache_savings
+FROM requests
+WHERE date >= date('now', '-7 days')
+GROUP BY provider, model;
+
+-- Slowest requests (p99 latency)
+SELECT request_id, model, duration_ms, timestamp
+FROM requests
+ORDER BY duration_ms DESC
+LIMIT 100;
+
+-- Cache efficiency (Anthropic only)
+SELECT
+    COUNT(*) as requests,
+    SUM(cache_read_input_tokens) as total_cached,
+    SUM(input_tokens) as total_input,
+    ROUND(100.0 * SUM(cache_read_input_tokens) / SUM(input_tokens), 2) as cache_hit_rate
+FROM requests
+WHERE provider = 'anthropic' AND date >= date('now', '-1 day');
 ```
+
+**Data Retention**:
+- Request logs: 7 days (configurable)
+- Trace spans: 7 days
+- Automatic cleanup runs daily at 3 AM
+
+All metrics are stored in SQLite and accessible via:
+- **Web Dashboard**: Real-time charts at `http://localhost:8080/`
+- **SQL Queries**: Direct database access for custom analytics
+- **REST API**: Dashboard API endpoints for programmatic access
 
 ## Feature Matrix
 
@@ -643,6 +742,28 @@ For more documentation:
 
 ## Configuration
 
+### Observability Configuration
+
+Add to `config.toml`:
+
+```toml
+[observability]
+enabled = true
+database_path = "./data/observability.db"
+
+# Performance tuning
+[observability.performance]
+batch_size = 100              # Events per batch write
+flush_interval_ms = 100       # Max time before flushing batch
+max_buffer_size = 10000       # Ring buffer size
+
+# Data retention policies
+[observability.retention]
+logs_days = 7                     # Keep request logs for 7 days
+spans_days = 7                    # Keep trace spans for 7 days
+cleanup_hour = 3                  # Run cleanup at 3 AM daily (0-23)
+```
+
 ### Environment Variables
 
 You can override configuration with environment variables:
@@ -650,6 +771,7 @@ You can override configuration with environment variables:
 ```bash
 export LLM_GATEWAY__SERVER__PORT=9000
 export LLM_GATEWAY__PROVIDERS__OPENAI__API_KEY="sk-new-key"
+export LLM_GATEWAY__OBSERVABILITY__ENABLED=true
 ```
 
 ## License
@@ -665,4 +787,4 @@ See the implementation plan in the repo for full architecture documentation incl
 - Streaming architecture
 - Metrics implementation
 
-Built with ❤️ in Rust using Axum, Tokio, and Prometheus.
+Built with ❤️ in Rust using Axum, Tokio, and SQLite.

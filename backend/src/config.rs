@@ -7,7 +7,6 @@ pub struct Config {
     pub api_keys: Vec<ApiKeyConfig>,
     pub routing: RoutingConfig,
     pub providers: ProvidersConfig,
-    pub metrics: MetricsConfig,
     #[serde(default)]
     pub observability: ObservabilityConfig,
 }
@@ -145,13 +144,6 @@ fn default_failure_timeout() -> u64 {
 
 fn default_weight() -> u32 {
     100
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct MetricsConfig {
-    pub enabled: bool,
-    pub endpoint: String,
-    pub include_api_key_hash: bool,
 }
 
 /// Observability configuration (logs, traces, metrics persistence)
@@ -554,11 +546,6 @@ mod tests {
                     cache: CacheConfig::default(),
                 }],
                 gemini: vec![],
-            },
-            metrics: MetricsConfig {
-                enabled: true,
-                endpoint: "/metrics".to_string(),
-                include_api_key_hash: true,
             },
             observability: ObservabilityConfig::default(),
         }

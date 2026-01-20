@@ -35,7 +35,7 @@ pub async fn list_models(State(_state): State<AppState>) -> impl IntoResponse {
 mod tests {
     use super::*;
     use crate::config::{
-        AnthropicInstanceConfig, ApiKeyConfig, Config, DiscoveryConfig, MetricsConfig, ProviderInstanceConfig,
+        AnthropicInstanceConfig, ApiKeyConfig, Config, DiscoveryConfig, ProviderInstanceConfig,
         ProvidersConfig, RoutingConfig, ServerConfig,
     };
     use crate::router::ModelRouter;
@@ -102,11 +102,6 @@ mod tests {
                     failure_timeout_seconds: 60,
                     weight: 100,
                 }],
-            },
-            metrics: MetricsConfig {
-                enabled: true,
-                endpoint: "/metrics".to_string(),
-                include_api_key_hash: true,
             },
             observability: crate::config::ObservabilityConfig::default(),
         };

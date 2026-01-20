@@ -47,7 +47,11 @@
       "Bash(ls:*)",
       "Bash(git remote add:*)",
       "Bash(git push:*)",
-      "Bash(git fetch:*)"
+      "Bash(git fetch:*)",
+      "Bash(npm run build)",
+      "Skill(frontend-design:frontend-design)",
+      "Bash(for i in 1 2 3)",
+      "Bash(do)"
     ]
   }
 }

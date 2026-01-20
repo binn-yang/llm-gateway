@@ -15,7 +15,7 @@
     </div>
     <div v-else class="health-grid">
       <div
-        v-for="(instance, index) in instances"
+        v-for="instance in instances"
         :key="instance.name"
         class="health-item"
       >
@@ -91,34 +91,34 @@ const instances = computed<HealthInstance[]>(() => {
 
     // If no structured labels, use the whole key as instance name
     const instanceName = instanceMatch ? instanceMatch[1] : cleanKey
-    const provider = providerMatch ? providerMatch[1].toUpperCase() : 'UNKNOWN'
+    const provider = providerMatch && providerMatch[1] ? providerMatch[1].toUpperCase() : 'UNKNOWN'
 
     // Find matching request count - search for keys containing the instance name
     const requestKey = Object.keys(requests).find(k => {
       const cleanK = k.replace(/"/g, '')
-      return cleanK.includes(instanceName)
+      return cleanK.includes(instanceName || '')
     })
     const requestCount = requestKey ? requests[requestKey] : 0
 
     // Calculate average latency
     const latencySumKey = Object.keys(latencySum).find(k => {
       const cleanK = k.replace(/"/g, '')
-      return cleanK.includes(instanceName)
+      return cleanK.includes(instanceName || '')
     })
     const latencyCountKey = Object.keys(latencyCount).find(k => {
       const cleanK = k.replace(/"/g, '')
-      return cleanK.includes(instanceName)
+      return cleanK.includes(instanceName || '')
     })
 
-    const sum = latencySumKey ? latencySum[latencySumKey] : 0
-    const count = latencyCountKey ? latencyCount[latencyCountKey] : 0
-    const avgLatency = count > 0 ? sum / count : 0
+    const sum = latencySumKey ? latencySum[latencySumKey!] : 0
+    const count = latencyCountKey ? latencyCount[latencyCountKey!] : 0
+    const avgLatency = count && count > 0 ? sum! / count : 0
 
     result.push({
-      name: instanceName,
+      name: instanceName || 'unknown',
       provider,
       status: status === 1 ? 'healthy' : 'unhealthy',
-      requests: requestCount,
+      requests: requestCount || 0,
       latency: avgLatency,
       healthPercent: status === 1 ? 100 : 0,
     })

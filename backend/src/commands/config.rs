@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn test_count_enabled_providers() {
         use llm_gateway::config::{
-            AnthropicInstanceConfig, MetricsConfig, ObservabilityConfig,
+            AnthropicInstanceConfig, ObservabilityConfig,
             ProviderInstanceConfig, ProvidersConfig, RoutingConfig, ServerConfig,
         };
         use std::collections::HashMap;
@@ -176,11 +176,6 @@ mod tests {
                     failure_timeout_seconds: 60,
                     weight: 100,
                 }],
-            },
-            metrics: MetricsConfig {
-                enabled: true,
-                endpoint: "/metrics".to_string(),
-                include_api_key_hash: true,
             },
             observability: ObservabilityConfig::default(),
         };
