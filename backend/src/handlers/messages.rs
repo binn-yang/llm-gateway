@@ -12,7 +12,7 @@ use axum::{
     response::{IntoResponse, Response},
     Extension, Json,
 };
-use chrono::{Timelike, Utc};
+use chrono::{Timelike, Utc, Local};
 use std::time::Instant;
 
 /// 复用 chat_completions 的 AppState
@@ -130,17 +130,20 @@ pub async fn handle_messages(
 
     // 4. 根据 stream 参数处理响应
     if is_stream {
-        // 流式响应 - 直接转发原生 Anthropic SSE
+        // Stream response with usage tracking
         tracing::debug!("Streaming native Anthropic SSE response");
 
-        // Log request event (streaming)
+        // Generate request ID and log initial request (with 0 tokens)
+        let request_id = uuid::Uuid::new_v4().to_string();
+
         if let Some(logger) = &state.request_logger {
-            let now = Utc::now();
+            let now_utc = Utc::now();
+            let now_local = Local::now();
             let event = RequestEvent {
-                request_id: uuid::Uuid::new_v4().to_string(),
-                timestamp: now.timestamp_millis(),
-                date: now.format("%Y-%m-%d").to_string(),
-                hour: now.hour() as i32,
+                request_id: request_id.clone(),
+                timestamp: now_utc.timestamp_millis(),
+                date: now_local.format("%Y-%m-%d").to_string(),
+                hour: now_local.hour() as i32,
                 api_key_name: auth.api_key_name.clone(),
                 provider: provider_name.to_string(),
                 instance: instance_name.clone(),
@@ -157,12 +160,41 @@ pub async fn handle_messages(
                 input_tokens: 0,
                 output_tokens: 0,
                 total_tokens: 0,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
                 duration_ms,
             };
             logger.log_request(event).await;
         }
 
-        let sse_stream = streaming::create_native_anthropic_sse_stream(response);
+        // Create tracker and stream with usage tracking
+        let tracker = streaming::StreamingUsageTracker::new(request_id.clone());
+        let sse_stream = streaming::create_native_anthropic_sse_stream_with_tracker(response, tracker.clone());
+
+        // Spawn background task to update tokens when stream completes
+        if let Some(logger) = state.request_logger.clone() {
+            tokio::spawn(async move {
+                // Wait for tracker to notify completion (no polling/sleeping!)
+                if let Some((input, output, cache_creation, cache_read)) = tracker.wait_for_completion().await {
+                    logger.update_tokens(
+                        &request_id,
+                        input as i64,
+                        output as i64,
+                        (input + output) as i64,
+                        cache_creation as i64,
+                        cache_read as i64,
+                    ).await;
+                } else {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        provider = "anthropic",
+                        endpoint = "/v1/messages",
+                        "Stream completed without token usage data"
+                    );
+                }
+            });
+        }
+
         Ok(sse_stream.into_response())
     } else {
         // 非流式响应 - 返回原生 Anthropic JSON
@@ -170,12 +202,13 @@ pub async fn handle_messages(
 
         // Log request event
         if let Some(logger) = &state.request_logger {
-            let now = Utc::now();
+            let now_utc = Utc::now();
+            let now_local = Local::now();
             let event = RequestEvent {
                 request_id: uuid::Uuid::new_v4().to_string(),
-                timestamp: now.timestamp_millis(),
-                date: now.format("%Y-%m-%d").to_string(),
-                hour: now.hour() as i32,
+                timestamp: now_utc.timestamp_millis(),
+                date: now_local.format("%Y-%m-%d").to_string(),
+                hour: now_local.hour() as i32,
                 api_key_name: auth.api_key_name.clone(),
                 provider: provider_name.to_string(),
                 instance: instance_name.clone(),
@@ -192,6 +225,8 @@ pub async fn handle_messages(
                 input_tokens: body.usage.input_tokens as i64,
                 output_tokens: body.usage.output_tokens as i64,
                 total_tokens: (body.usage.input_tokens + body.usage.output_tokens) as i64,
+                cache_creation_input_tokens: body.usage.cache_creation_input_tokens.unwrap_or(0) as i64,
+                cache_read_input_tokens: body.usage.cache_read_input_tokens.unwrap_or(0) as i64,
                 duration_ms,
             };
             logger.log_request(event).await;

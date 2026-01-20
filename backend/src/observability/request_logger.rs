@@ -1,5 +1,6 @@
 use sqlx::SqlitePool;
 use tokio::sync::mpsc;
+use std::sync::Arc;
 
 /// Request event to be written to database
 #[derive(Debug, Clone)]
@@ -19,6 +20,8 @@ pub struct RequestEvent {
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub total_tokens: i64,
+    pub cache_creation_input_tokens: i64,
+    pub cache_read_input_tokens: i64,
     pub duration_ms: i64,
 }
 
@@ -26,8 +29,10 @@ pub struct RequestEvent {
 ///
 /// Uses MPSC (Multi-Producer, Single-Consumer) channel to decouple
 /// request handling from database writes, ensuring non-blocking operation.
+#[derive(Clone)]
 pub struct RequestLogger {
     tx: mpsc::Sender<RequestEvent>,
+    pool: Arc<SqlitePool>,
 }
 
 impl RequestLogger {
@@ -43,11 +48,13 @@ impl RequestLogger {
     /// - Backpressure: Blocks if buffer is full
     pub fn new(pool: SqlitePool, buffer_size: usize) -> Self {
         let (tx, mut rx) = mpsc::channel::<RequestEvent>(buffer_size);
+        let pool = Arc::new(pool);
+        let pool_clone = pool.clone();
 
         // Spawn background writer task
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                if let Err(e) = Self::write_request(&pool, &event).await {
+                if let Err(e) = Self::write_request(&pool_clone, &event).await {
                     tracing::error!(
                         request_id = %event.request_id,
                         error = %e,
@@ -57,7 +64,7 @@ impl RequestLogger {
             }
         });
 
-        Self { tx }
+        Self { tx, pool }
     }
 
     /// Log a request (non-blocking, sends to channel)
@@ -74,8 +81,10 @@ impl RequestLogger {
             INSERT INTO requests (
                 request_id, timestamp, date, hour, api_key_name, provider, instance,
                 model, endpoint, status, error_type, error_message,
-                input_tokens, output_tokens, total_tokens, duration_ms
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                input_tokens, output_tokens, total_tokens,
+                cache_creation_input_tokens, cache_read_input_tokens,
+                duration_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
             "#
         )
         .bind(&event.request_id)
@@ -93,11 +102,49 @@ impl RequestLogger {
         .bind(event.input_tokens)
         .bind(event.output_tokens)
         .bind(event.total_tokens)
+        .bind(event.cache_creation_input_tokens)
+        .bind(event.cache_read_input_tokens)
         .bind(event.duration_ms)
         .execute(pool)
         .await?;
 
         Ok(())
+    }
+
+    /// Update token counts for an existing request (used for streaming responses)
+    pub async fn update_tokens(
+        &self,
+        request_id: &str,
+        input_tokens: i64,
+        output_tokens: i64,
+        total_tokens: i64,
+        cache_creation_input_tokens: i64,
+        cache_read_input_tokens: i64,
+    ) {
+        let request_id = request_id.to_string();
+        let pool = self.pool.clone();
+
+        // Spawn a background task to update the database
+        tokio::spawn(async move {
+            if let Err(e) = sqlx::query(
+                "UPDATE requests SET input_tokens = ?1, output_tokens = ?2, total_tokens = ?3, cache_creation_input_tokens = ?4, cache_read_input_tokens = ?5 WHERE request_id = ?6"
+            )
+            .bind(input_tokens)
+            .bind(output_tokens)
+            .bind(total_tokens)
+            .bind(cache_creation_input_tokens)
+            .bind(cache_read_input_tokens)
+            .bind(&request_id)
+            .execute(&*pool)
+            .await
+            {
+                tracing::error!(
+                    request_id = %request_id,
+                    error = %e,
+                    "Failed to update token counts in database"
+                );
+            }
+        });
     }
 }
 
@@ -123,6 +170,8 @@ mod tests {
             input_tokens: 100,
             output_tokens: 50,
             total_tokens: 150,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
             duration_ms: 1234,
         };
 

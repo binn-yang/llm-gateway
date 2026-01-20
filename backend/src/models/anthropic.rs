@@ -249,8 +249,9 @@ pub struct MessageData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Delta {
     /// Delta type (e.g., "text_delta", "input_json_delta")
-    #[serde(rename = "type")]
-    pub delta_type: String,
+    /// Optional because message_delta events don't include this field
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub delta_type: Option<String>,
     /// Text content (for text deltas)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,

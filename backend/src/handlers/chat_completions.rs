@@ -15,7 +15,7 @@ use axum::{
     response::{IntoResponse, Response},
     Extension, Json,
 };
-use chrono::{Timelike, Utc};
+use chrono::{Timelike, Utc, Local};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -127,17 +127,20 @@ async fn handle_openai_request(
     let duration_ms = start.elapsed().as_millis() as i64;
 
     if is_stream {
-        // Stream response - TODO: implement usage tracking for streaming
+        // Stream response with usage tracking
         tracing::debug!("Streaming response from OpenAI");
 
-        // Log request event (streaming requests have 0 tokens initially)
+        // Generate request ID and log initial request (with 0 tokens)
+        let request_id = uuid::Uuid::new_v4().to_string();
+
         if let Some(logger) = &state.request_logger {
-            let now = Utc::now();
+            let now_utc = Utc::now();
+            let now_local = Local::now();
             let event = RequestEvent {
-                request_id: uuid::Uuid::new_v4().to_string(),
-                timestamp: now.timestamp_millis(),
-                date: now.format("%Y-%m-%d").to_string(),
-                hour: now.hour() as i32,
+                request_id: request_id.clone(),
+                timestamp: now_utc.timestamp_millis(),
+                date: now_local.format("%Y-%m-%d").to_string(),
+                hour: now_local.hour() as i32,
                 api_key_name: auth.api_key_name.clone(),
                 provider: "openai".to_string(),
                 instance: instance_name.clone(),
@@ -154,12 +157,39 @@ async fn handle_openai_request(
                 input_tokens: 0,
                 output_tokens: 0,
                 total_tokens: 0,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
                 duration_ms,
             };
             logger.log_request(event).await;
         }
 
-        let sse_stream = streaming::create_openai_sse_stream(response);
+        // Create tracker and stream with usage tracking
+        let tracker = streaming::StreamingUsageTracker::new(request_id.clone());
+        let sse_stream = streaming::create_openai_sse_stream_with_tracker(response, tracker.clone());
+
+        // Spawn background task to update tokens when stream completes
+        if let Some(logger) = state.request_logger.clone() {
+            tokio::spawn(async move {
+                // Wait for tracker to notify completion (no polling/sleeping!)
+                if let Some((input, output, cache_creation, cache_read)) = tracker.wait_for_completion().await {
+                    logger.update_tokens(
+                        &request_id,
+                        input as i64,
+                        output as i64,
+                        (input + output) as i64,
+                        cache_creation as i64,
+                        cache_read as i64,
+                    ).await;
+                } else {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        "Stream completed without token usage data"
+                    );
+                }
+            });
+        }
+
         Ok(sse_stream.into_response())
     } else {
         // Non-streaming response
@@ -177,12 +207,13 @@ async fn handle_openai_request(
 
         // Log request event
         if let Some(logger) = &state.request_logger {
-            let now = Utc::now();
+            let now_utc = Utc::now();
+            let now_local = Local::now();
             let event = RequestEvent {
                 request_id: uuid::Uuid::new_v4().to_string(),
-                timestamp: now.timestamp_millis(),
-                date: now.format("%Y-%m-%d").to_string(),
-                hour: now.hour() as i32,
+                timestamp: now_utc.timestamp_millis(),
+                date: now_local.format("%Y-%m-%d").to_string(),
+                hour: now_local.hour() as i32,
                 api_key_name: auth.api_key_name.clone(),
                 provider: "openai".to_string(),
                 instance: instance_name.clone(),
@@ -199,6 +230,8 @@ async fn handle_openai_request(
                 input_tokens,
                 output_tokens,
                 total_tokens,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
                 duration_ms,
             };
             logger.log_request(event).await;
@@ -275,18 +308,20 @@ async fn handle_anthropic_request(
     let duration_ms = start.elapsed().as_millis() as i64;
 
     if is_stream {
-        // Stream response - TODO: implement usage tracking for streaming
+        // Stream response with usage tracking
         tracing::debug!("Streaming response from Anthropic");
-        let mut response = streaming::create_anthropic_sse_stream(response).into_response();
 
-        // Log request event (streaming)
+        // Generate request ID and log initial request (with 0 tokens)
+        let request_id = uuid::Uuid::new_v4().to_string();
+
         if let Some(logger) = &state.request_logger {
-            let now = Utc::now();
+            let now_utc = Utc::now();
+            let now_local = Local::now();
             let event = RequestEvent {
-                request_id: uuid::Uuid::new_v4().to_string(),
-                timestamp: now.timestamp_millis(),
-                date: now.format("%Y-%m-%d").to_string(),
-                hour: now.hour() as i32,
+                request_id: request_id.clone(),
+                timestamp: now_utc.timestamp_millis(),
+                date: now_local.format("%Y-%m-%d").to_string(),
+                hour: now_local.hour() as i32,
                 api_key_name: auth.api_key_name.clone(),
                 provider: "anthropic".to_string(),
                 instance: instance_name.clone(),
@@ -303,10 +338,16 @@ async fn handle_anthropic_request(
                 input_tokens: 0,
                 output_tokens: 0,
                 total_tokens: 0,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
                 duration_ms,
             };
             logger.log_request(event).await;
         }
+
+        // Create tracker and stream with usage tracking
+        let tracker = streaming::StreamingUsageTracker::new(request_id.clone());
+        let mut response = streaming::create_anthropic_sse_stream_with_tracker(response, request_id.clone(), tracker.clone()).into_response();
 
         // Add warnings header if present
         if let Some(warnings_json) = conversion_warnings.to_header_value() {
@@ -314,6 +355,29 @@ async fn handle_anthropic_request(
                 axum::http::HeaderName::from_static("x-llm-gateway-warnings"),
                 axum::http::HeaderValue::from_str(&warnings_json).unwrap_or_else(|_| axum::http::HeaderValue::from_static("[]"))
             );
+        }
+
+        // Spawn background task to update tokens when stream completes
+        if let Some(logger) = state.request_logger.clone() {
+            tokio::spawn(async move {
+                // Wait for tracker to notify completion (no polling/sleeping!)
+                if let Some((input, output, cache_creation, cache_read)) = tracker.wait_for_completion().await {
+                    logger.update_tokens(
+                        &request_id,
+                        input as i64,
+                        output as i64,
+                        (input + output) as i64,
+                        cache_creation as i64,
+                        cache_read as i64,
+                    ).await;
+                } else {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        provider = "anthropic",
+                        "Stream completed without token usage data"
+                    );
+                }
+            });
         }
 
         Ok(response)
@@ -330,7 +394,7 @@ async fn handle_anthropic_request(
         // Convert back to OpenAI format
         let openai_body = converters::anthropic_response::convert_response(&anthropic_body)?;
 
-        // Extract usage
+        // Extract usage from OpenAI format (for compatibility)
         let (input_tokens, output_tokens, total_tokens) = match &openai_body.usage {
             Some(usage) => (
                 usage.prompt_tokens as i64,
@@ -340,14 +404,19 @@ async fn handle_anthropic_request(
             None => (0, 0, 0),
         };
 
+        // Extract cache tokens from original Anthropic response
+        let cache_creation_tokens = anthropic_body.usage.cache_creation_input_tokens.unwrap_or(0) as i64;
+        let cache_read_tokens = anthropic_body.usage.cache_read_input_tokens.unwrap_or(0) as i64;
+
         // Log request event
         if let Some(logger) = &state.request_logger {
-            let now = Utc::now();
+            let now_utc = Utc::now();
+            let now_local = Local::now();
             let event = RequestEvent {
                 request_id: uuid::Uuid::new_v4().to_string(),
-                timestamp: now.timestamp_millis(),
-                date: now.format("%Y-%m-%d").to_string(),
-                hour: now.hour() as i32,
+                timestamp: now_utc.timestamp_millis(),
+                date: now_local.format("%Y-%m-%d").to_string(),
+                hour: now_local.hour() as i32,
                 api_key_name: auth.api_key_name.clone(),
                 provider: "anthropic".to_string(),
                 instance: instance_name.clone(),
@@ -364,6 +433,8 @@ async fn handle_anthropic_request(
                 input_tokens,
                 output_tokens,
                 total_tokens,
+                cache_creation_input_tokens: cache_creation_tokens,
+                cache_read_input_tokens: cache_read_tokens,
                 duration_ms,
             };
             logger.log_request(event).await;
@@ -453,18 +524,20 @@ async fn handle_gemini_request(
     let duration_ms = start.elapsed().as_millis() as i64;
 
     if is_stream {
-        // Stream response - TODO: implement usage tracking for streaming
+        // Stream response with usage tracking
         tracing::debug!("Streaming response from Gemini");
-        let mut response = streaming::create_gemini_sse_stream(response).into_response();
 
-        // Log request event (streaming)
+        // Generate request ID and log initial request (with 0 tokens)
+        let request_id = uuid::Uuid::new_v4().to_string();
+
         if let Some(logger) = &state.request_logger {
-            let now = Utc::now();
+            let now_utc = Utc::now();
+            let now_local = Local::now();
             let event = RequestEvent {
-                request_id: uuid::Uuid::new_v4().to_string(),
-                timestamp: now.timestamp_millis(),
-                date: now.format("%Y-%m-%d").to_string(),
-                hour: now.hour() as i32,
+                request_id: request_id.clone(),
+                timestamp: now_utc.timestamp_millis(),
+                date: now_local.format("%Y-%m-%d").to_string(),
+                hour: now_local.hour() as i32,
                 api_key_name: auth.api_key_name.clone(),
                 provider: "gemini".to_string(),
                 instance: instance_name.clone(),
@@ -481,10 +554,16 @@ async fn handle_gemini_request(
                 input_tokens: 0,
                 output_tokens: 0,
                 total_tokens: 0,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
                 duration_ms,
             };
             logger.log_request(event).await;
         }
+
+        // Create tracker and stream with usage tracking
+        let tracker = streaming::StreamingUsageTracker::new(request_id.clone());
+        let mut response = streaming::create_gemini_sse_stream_with_tracker(response, request_id.clone(), tracker.clone()).into_response();
 
         // Add warnings header if present
         if let Some(warnings_json) = conversion_warnings.to_header_value() {
@@ -492,6 +571,29 @@ async fn handle_gemini_request(
                 axum::http::HeaderName::from_static("x-llm-gateway-warnings"),
                 axum::http::HeaderValue::from_str(&warnings_json).unwrap_or_else(|_| axum::http::HeaderValue::from_static("[]"))
             );
+        }
+
+        // Spawn background task to update tokens when stream completes
+        if let Some(logger) = state.request_logger.clone() {
+            tokio::spawn(async move {
+                // Wait for tracker to notify completion (no polling/sleeping!)
+                if let Some((input, output, cache_creation, cache_read)) = tracker.wait_for_completion().await {
+                    logger.update_tokens(
+                        &request_id,
+                        input as i64,
+                        output as i64,
+                        (input + output) as i64,
+                        cache_creation as i64,
+                        cache_read as i64,
+                    ).await;
+                } else {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        provider = "gemini",
+                        "Stream completed without token usage data"
+                    );
+                }
+            });
         }
 
         Ok(response)
@@ -520,12 +622,13 @@ async fn handle_gemini_request(
 
         // Log request event
         if let Some(logger) = &state.request_logger {
-            let now = Utc::now();
+            let now_utc = Utc::now();
+            let now_local = Local::now();
             let event = RequestEvent {
                 request_id: uuid::Uuid::new_v4().to_string(),
-                timestamp: now.timestamp_millis(),
-                date: now.format("%Y-%m-%d").to_string(),
-                hour: now.hour() as i32,
+                timestamp: now_utc.timestamp_millis(),
+                date: now_local.format("%Y-%m-%d").to_string(),
+                hour: now_local.hour() as i32,
                 api_key_name: auth.api_key_name.clone(),
                 provider: "gemini".to_string(),
                 instance: instance_name.clone(),
@@ -542,6 +645,8 @@ async fn handle_gemini_request(
                 input_tokens,
                 output_tokens,
                 total_tokens,
+                cache_creation_input_tokens: 0,
+                cache_read_input_tokens: 0,
                 duration_ms,
             };
             logger.log_request(event).await;

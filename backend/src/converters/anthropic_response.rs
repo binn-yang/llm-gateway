@@ -136,8 +136,8 @@ pub fn convert_stream_event(event: &StreamEvent, request_id: &str) -> Option<Cha
         "content_block_delta" => {
             if let Some(delta) = &event.delta {
                 // Check if this is text delta or tool input delta
-                match delta.delta_type.as_str() {
-                    "text_delta" => {
+                match delta.delta_type.as_deref() {
+                    Some("text_delta") => {
                         // Text content delta
                         if let Some(text) = &delta.text {
                             return Some(ChatCompletionChunk {
@@ -158,7 +158,7 @@ pub fn convert_stream_event(event: &StreamEvent, request_id: &str) -> Option<Cha
                             });
                         }
                     }
-                    "input_json_delta" => {
+                    Some("input_json_delta") => {
                         // Tool input JSON delta
                         if let Some(partial_json) = &delta.partial_json {
                             let index = event.index.unwrap_or(0);
@@ -309,7 +309,7 @@ mod tests {
             index: Some(0),
             content_block: None,
             delta: Some(AnthropicDelta {
-                delta_type: "text_delta".to_string(),
+                delta_type: Some("text_delta".to_string()),
                 text: Some("Hello".to_string()),
                 stop_reason: None,
                 partial_json: None,
@@ -332,7 +332,7 @@ mod tests {
             index: None,
             content_block: None,
             delta: Some(AnthropicDelta {
-                delta_type: "message_delta".to_string(),
+                delta_type: Some("message_delta".to_string()),
                 text: None,
                 stop_reason: Some("end_turn".to_string()),
                 partial_json: None,

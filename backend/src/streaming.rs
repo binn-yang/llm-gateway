@@ -7,6 +7,258 @@ use crate::{
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::stream::{Stream, StreamExt};
 use std::convert::Infallible;
+use std::sync::{Arc, Mutex};
+
+/// Usage information extracted from streaming response
+#[derive(Debug, Clone)]
+pub struct StreamUsage {
+    pub request_id: String,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+}
+
+/// Streaming usage tracker with completion notification
+///
+/// This tracker supports both OpenAI-style (single chunk with complete usage)
+/// and Anthropic-style (usage split across message_start and message_delta) streams.
+///
+/// # Performance
+/// - Channel send: ~1μs (lock-free fast path)
+/// - Channel receive: Zero CPU until notification
+/// - No polling, no sleeping, no busy-waiting
+#[derive(Clone)]
+pub struct StreamingUsageTracker {
+    request_id: String,
+    /// Partial usage state (for Anthropic's split usage)
+    input_tokens: Arc<Mutex<Option<u64>>>,
+    output_tokens: Arc<Mutex<Option<u64>>>,
+    /// Cache token tracking (for Anthropic prompt caching)
+    cache_creation_input_tokens: Arc<Mutex<Option<u64>>>,
+    cache_read_input_tokens: Arc<Mutex<Option<u64>>>,
+    /// Completion notification: sender completes when stream ends
+    completion_tx: Arc<tokio::sync::watch::Sender<bool>>,
+}
+
+impl StreamingUsageTracker {
+    /// Create new tracker
+    pub fn new(request_id: String) -> Self {
+        let (completion_tx, _) = tokio::sync::watch::channel(false);
+        Self {
+            request_id,
+            input_tokens: Arc::new(Mutex::new(None)),
+            output_tokens: Arc::new(Mutex::new(None)),
+            cache_creation_input_tokens: Arc::new(Mutex::new(None)),
+            cache_read_input_tokens: Arc::new(Mutex::new(None)),
+            completion_tx: Arc::new(completion_tx),
+        }
+    }
+
+    /// Set OpenAI-style usage (single chunk with complete usage)
+    pub fn set_usage(&self, prompt: u64, completion: u64) {
+        *self.input_tokens.lock().unwrap() = Some(prompt);
+        *self.output_tokens.lock().unwrap() = Some(completion);
+        self.notify_complete();
+    }
+
+    /// Set Anthropic-style input tokens (from message_start)
+    pub fn set_input_tokens(&self, tokens: u64) {
+        *self.input_tokens.lock().unwrap() = Some(tokens);
+        // Don't notify yet - still waiting for output_tokens
+    }
+
+    /// Set Anthropic-style output tokens (from message_delta)
+    pub fn set_output_tokens(&self, tokens: u64) {
+        *self.output_tokens.lock().unwrap() = Some(tokens);
+        self.notify_complete();
+    }
+
+    /// Set Anthropic-style input usage with cache tokens (from message_start)
+    ///
+    /// This method sets all input-related tokens at once:
+    /// - `input`: Regular input tokens
+    /// - `cache_creation`: Tokens used to create prompt cache (optional)
+    /// - `cache_read`: Tokens read from prompt cache (optional)
+    pub fn set_input_usage(&self, input: u64, cache_creation: Option<u64>, cache_read: Option<u64>) {
+        *self.input_tokens.lock().unwrap() = Some(input);
+        *self.cache_creation_input_tokens.lock().unwrap() = cache_creation;
+        *self.cache_read_input_tokens.lock().unwrap() = cache_read;
+        // Don't notify yet - still waiting for output_tokens
+    }
+
+    /// Set all usage data from message_delta event (final values)
+    ///
+    /// This is the preferred method for extracting usage from Anthropic streams,
+    /// as message_delta contains complete final usage data in all provider implementations
+    /// (both official Anthropic API and compatible APIs like GLM).
+    ///
+    /// # Arguments
+    /// - `input`: Input tokens (prompt tokens)
+    /// - `output`: Output tokens (completion tokens)
+    /// - `cache_creation`: Tokens used to create prompt cache (optional)
+    /// - `cache_read`: Tokens read from prompt cache (optional)
+    pub fn set_full_usage(
+        &self,
+        input: u64,
+        output: u64,
+        cache_creation: Option<u64>,
+        cache_read: Option<u64>,
+    ) {
+        *self.input_tokens.lock().unwrap() = Some(input);
+        *self.output_tokens.lock().unwrap() = Some(output);
+        *self.cache_creation_input_tokens.lock().unwrap() = cache_creation;
+        *self.cache_read_input_tokens.lock().unwrap() = cache_read;
+        self.notify_complete();
+    }
+
+    /// Mark stream as complete (triggers callback)
+    fn notify_complete(&self) {
+        let _ = self.completion_tx.send(true);
+    }
+
+    /// Wait for stream completion and get final usage
+    ///
+    /// Returns `None` if usage never arrives (malformed response).
+    ///
+    /// # Returns
+    /// `Some((input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens))`
+    /// where cache tokens default to 0 if not present.
+    pub async fn wait_for_completion(&self) -> Option<(u64, u64, u64, u64)> {
+        let mut rx = self.completion_tx.subscribe();
+
+        // Wait for completion notification (no polling!)
+        let timeout_result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(300), // 5 minute timeout
+            rx.wait_for(|&completed| completed)
+        )
+        .await;
+
+        if timeout_result.is_err() {
+            // Timeout - return None
+            return None;
+        }
+
+        let input_lock = self.input_tokens.lock().ok()?;
+        let output_lock = self.output_tokens.lock().ok()?;
+        let cache_creation_lock = self.cache_creation_input_tokens.lock().ok()?;
+        let cache_read_lock = self.cache_read_input_tokens.lock().ok()?;
+
+        let input = *input_lock;
+        let output = *output_lock;
+        let cache_creation = *cache_creation_lock;
+        let cache_read = *cache_read_lock;
+
+        // Only input and output are required; cache tokens are optional
+        if input.is_none() || output.is_none() {
+            return None;
+        }
+
+        Some((
+            input.unwrap(),
+            output.unwrap(),
+            cache_creation.unwrap_or(0),  // Default to 0 if not present
+            cache_read.unwrap_or(0),      // Default to 0 if not present
+        ))
+    }
+
+    /// Get request ID
+    pub fn request_id(&self) -> &str {
+        &self.request_id
+    }
+}
+
+/// Wrapper for OpenAI SSE stream that extracts usage information
+pub fn create_openai_sse_stream_with_usage(
+    response: reqwest::Response,
+    request_id: String,
+) -> (Sse<impl Stream<Item = Result<Event, Infallible>>>, Arc<Mutex<Option<StreamUsage>>>) {
+    let usage_tracker = Arc::new(Mutex::new(None::<StreamUsage>));
+    let usage_tracker_clone = usage_tracker.clone();
+
+    let stream = response.bytes_stream().map(move |chunk_result| {
+        match chunk_result {
+            Ok(bytes) => {
+                // Parse the SSE data
+                let text = String::from_utf8_lossy(&bytes);
+
+                // SSE format: "data: {...}\n\n"
+                for line in text.lines() {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if data == "[DONE]" {
+                            // End of stream marker
+                            return Ok(Event::default().data("[DONE]"));
+                        }
+
+                        // Try to extract usage from this chunk
+                        if let Ok(chunk) = serde_json::from_str::<ChatCompletionChunk>(data) {
+                            if let Some(usage) = chunk.usage {
+                                let mut tracker = usage_tracker_clone.lock().unwrap();
+                                *tracker = Some(StreamUsage {
+                                    request_id: request_id.clone(),
+                                    prompt_tokens: usage.prompt_tokens,
+                                    completion_tokens: usage.completion_tokens,
+                                });
+                            }
+                        }
+
+                        // Forward the JSON data
+                        return Ok(Event::default().data(data.to_string()));
+                    }
+                }
+
+                // If no valid data found, send empty event
+                Ok(Event::default().data(""))
+            }
+            Err(e) => {
+                tracing::error!("Stream error: {}", e);
+                Ok(Event::default().data(""))
+            }
+        }
+    });
+
+    (Sse::new(stream).keep_alive(KeepAlive::default()), usage_tracker)
+}
+
+/// Wrapper for OpenAI SSE stream with StreamingUsageTracker
+///
+/// This version uses the new tracker-based approach that eliminates hardcoded delays
+/// and provides reliable completion notification via watch channel.
+pub fn create_openai_sse_stream_with_tracker(
+    response: reqwest::Response,
+    tracker: StreamingUsageTracker,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let stream = response.bytes_stream().map(move |chunk_result| {
+        match chunk_result {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+
+                for line in text.lines() {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if data == "[DONE]" {
+                            return Ok(Event::default().data("[DONE]"));
+                        }
+
+                        // Parse OpenAI chunk and extract usage
+                        if let Ok(chunk) = serde_json::from_str::<ChatCompletionChunk>(data) {
+                            // Check for usage in this chunk
+                            if let Some(usage) = chunk.usage {
+                                tracker.set_usage(usage.prompt_tokens, usage.completion_tokens);
+                            }
+                        }
+
+                        return Ok(Event::default().data(data.to_string()));
+                    }
+                }
+                Ok(Event::default().data(""))
+            }
+            Err(e) => {
+                tracing::error!("Stream error: {}", e);
+                Ok(Event::default().data(""))
+            }
+        }
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
 
 /// Convert a reqwest response stream to an SSE stream for OpenAI format
 pub fn create_openai_sse_stream(
@@ -107,6 +359,101 @@ pub fn create_anthropic_sse_stream(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+/// Wrapper for Anthropic SSE stream with StreamingUsageTracker
+///
+/// This version extracts usage from Anthropic's split events:
+/// - `message_start`: contains input_tokens
+/// - `message_delta`: contains output_tokens
+pub fn create_anthropic_sse_stream_with_tracker(
+    response: reqwest::Response,
+    request_id: String,
+    tracker: StreamingUsageTracker,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let stream = response.bytes_stream().flat_map(move |chunk_result| {
+        let tracker = tracker.clone();
+
+        futures::stream::iter(match chunk_result {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                let mut events = Vec::new();
+
+                for line in text.lines() {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if let Ok(anthropic_event) = serde_json::from_str::<StreamEvent>(data) {
+                            // EXTRACT USAGE - Only from message_delta (unified approach)
+                            match anthropic_event.event_type.as_str() {
+                                "message_start" => {
+                                    // message_start no longer extracts tokens
+                                    // Only used to mark stream start
+                                    tracing::debug!(
+                                        request_id = %request_id,
+                                        "Received message_start event (token extraction happens in message_delta)"
+                                    );
+                                }
+                                "message_delta" => {
+                                    // Log raw JSON payload for debugging
+                                    tracing::debug!(
+                                        request_id = %request_id,
+                                        raw_json = %data,
+                                        "Raw message_delta event payload (OpenAI API)"
+                                    );
+
+                                    // Extract ALL tokens from message_delta (final values)
+                                    if let Some(usage) = &anthropic_event.usage {
+                                        tracing::debug!(
+                                            request_id = %request_id,
+                                            input_tokens = usage.input_tokens,
+                                            output_tokens = usage.output_tokens,
+                                            cache_creation = ?usage.cache_creation_input_tokens,
+                                            cache_read = ?usage.cache_read_input_tokens,
+                                            "Extracted all tokens from message_delta (OpenAI API)"
+                                        );
+                                        tracker.set_full_usage(
+                                            usage.input_tokens,
+                                            usage.output_tokens,
+                                            usage.cache_creation_input_tokens,
+                                            usage.cache_read_input_tokens,
+                                        );
+                                    } else {
+                                        tracing::warn!(
+                                            request_id = %request_id,
+                                            "message_delta has no usage data"
+                                        );
+                                    }
+                                }
+                                _ => {}
+                            }
+
+                            // Convert to OpenAI format
+                            if let Some(openai_chunk) =
+                                converters::anthropic_response::convert_stream_event(
+                                    &anthropic_event,
+                                    &request_id,
+                                )
+                            {
+                                if let Ok(json) = serde_json::to_string(&openai_chunk) {
+                                    events.push(Ok(Event::default().data(json)));
+                                }
+                            }
+
+                            if anthropic_event.event_type == "message_stop" {
+                                events.push(Ok(Event::default().data("[DONE]")));
+                            }
+                        }
+                    }
+                }
+                events
+            }
+            Err(e) => {
+                tracing::error!("Stream error: {}", e);
+                vec![Ok(Event::default().data(""))]
+            }
+        })
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 /// Convert Gemini SSE stream to OpenAI SSE stream
 /// Gemini sends JSON objects in SSE format, each containing incremental content
 pub fn create_gemini_sse_stream(
@@ -165,6 +512,79 @@ pub fn create_gemini_sse_stream(
                     }
                 }
 
+                events
+            }
+            Err(e) => {
+                tracing::error!("Gemini stream error: {}", e);
+                vec![Ok(Event::default().data(""))]
+            }
+        })
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Wrapper for Gemini SSE stream with StreamingUsageTracker
+///
+/// This version extracts usage from Gemini's usage_metadata field,
+/// which appears only in the last chunk.
+pub fn create_gemini_sse_stream_with_tracker(
+    response: reqwest::Response,
+    request_id: String,
+    tracker: StreamingUsageTracker,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let is_first_chunk = Arc::new(Mutex::new(true));
+
+    let stream = response.bytes_stream().flat_map(move |chunk_result| {
+        let tracker = tracker.clone();
+        let is_first_chunk = is_first_chunk.clone();
+
+        futures::stream::iter(match chunk_result {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                let mut events = Vec::new();
+
+                for line in text.lines() {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if let Ok(gemini_chunk) =
+                            serde_json::from_str::<GenerateContentResponse>(data)
+                        {
+                            // EXTRACT USAGE - Check for usage_metadata
+                            if let Some(usage_metadata) = &gemini_chunk.usage_metadata {
+                                tracker.set_usage(
+                                    usage_metadata.prompt_token_count,
+                                    usage_metadata.candidates_token_count,
+                                );
+                            }
+
+                            // Convert to OpenAI chunk
+                            let mut is_first = is_first_chunk.lock().unwrap();
+                            match converters::gemini_streaming::convert_streaming_chunk(
+                                &gemini_chunk,
+                                &request_id,
+                                &mut is_first,
+                            ) {
+                                Ok(Some(openai_chunk)) => {
+                                    if let Ok(json) = serde_json::to_string(&openai_chunk) {
+                                        events.push(Ok(Event::default().data(json)));
+                                    }
+
+                                    if openai_chunk.choices[0].finish_reason.is_some() {
+                                        events.push(Ok(Event::default().data("[DONE]")));
+                                    }
+                                }
+                                Ok(None) => {
+                                    // Empty chunk, skip
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to convert Gemini chunk: {}", e);
+                                }
+                            }
+                        } else {
+                            tracing::warn!("Failed to parse Gemini chunk: {}", data);
+                        }
+                    }
+                }
                 events
             }
             Err(e) => {
@@ -294,6 +714,147 @@ pub fn create_native_anthropic_sse_stream(
             Err(e) => {
                 tracing::error!("Native Anthropic stream error: {}", e);
                 vec![]
+            }
+        })
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Wrapper for native Anthropic SSE stream with StreamingUsageTracker
+///
+/// This version extracts usage from Anthropic's split events (same as via OpenAI API):
+/// - `message_start`: contains input_tokens
+/// - `message_delta`: contains output_tokens
+pub fn create_native_anthropic_sse_stream_with_tracker(
+    response: reqwest::Response,
+    tracker: StreamingUsageTracker,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let buffer = Arc::new(Mutex::new(String::new()));
+
+    let stream = response.bytes_stream().flat_map(move |chunk_result| {
+        let buffer = buffer.clone();
+        let tracker = tracker.clone();
+
+        futures::stream::iter(match chunk_result {
+            Ok(bytes) => {
+                let chunk_text = String::from_utf8_lossy(&bytes).to_string();
+                let mut events = Vec::new();
+
+                let mut buf = buffer.lock().unwrap();
+                buf.push_str(&chunk_text);
+
+                // Process complete SSE events (terminated by double newline)
+                while let Some(event_end) = buf.find("\n\n") {
+                    let event_text = buf[..event_end].to_string();
+                    *buf = buf[event_end + 2..].to_string(); // +2 to skip "\n\n"
+
+                    // Parse this complete SSE event
+                    let mut current_event_type: Option<String> = None;
+                    let mut current_data_lines: Vec<String> = Vec::new();
+
+                    for line in event_text.lines() {
+                        if let Some(event_name) = line.strip_prefix("event: ") {
+                            current_event_type = Some(event_name.trim().to_string());
+                        } else if let Some(data) = line.strip_prefix("data: ") {
+                            current_data_lines.push(data.to_string());
+                        }
+                    }
+
+                    // EXTRACT USAGE from native Anthropic events
+                    if let Some(event_type) = &current_event_type {
+                        if let Some(data) = current_data_lines.first() {
+                            tracing::debug!(
+                                request_id = %tracker.request_id(),
+                                event_type = %event_type,
+                                data_len = data.len(),
+                                "Processing SSE event"
+                            );
+
+                            // Log raw JSON for message_delta events BEFORE parsing
+                            if event_type == "message_delta" {
+                                tracing::debug!(
+                                    request_id = %tracker.request_id(),
+                                    raw_json = %data,
+                                    "Raw message_delta JSON (before parsing)"
+                                );
+                            }
+
+                            match serde_json::from_str::<StreamEvent>(data) {
+                                Ok(anthropic_event) => match event_type.as_str() {
+                                    "message_start" => {
+                                        // message_start no longer extracts tokens
+                                        // Only used to mark stream start
+                                        tracing::debug!(
+                                            request_id = %tracker.request_id(),
+                                            "Received message_start event (token extraction happens in message_delta)"
+                                        );
+                                    }
+                                    "message_delta" => {
+                                        // Log raw JSON payload for debugging
+                                        tracing::debug!(
+                                            request_id = %tracker.request_id(),
+                                            raw_json = %data,
+                                            "Raw message_delta event payload (native API)"
+                                        );
+
+                                        // Extract ALL tokens from message_delta (final values)
+                                        if let Some(usage) = &anthropic_event.usage {
+                                            tracing::debug!(
+                                                request_id = %tracker.request_id(),
+                                                input_tokens = usage.input_tokens,
+                                                output_tokens = usage.output_tokens,
+                                                cache_creation = ?usage.cache_creation_input_tokens,
+                                                cache_read = ?usage.cache_read_input_tokens,
+                                                "Extracted all tokens from message_delta (native API)"
+                                            );
+                                            tracker.set_full_usage(
+                                                usage.input_tokens,
+                                                usage.output_tokens,
+                                                usage.cache_creation_input_tokens,
+                                                usage.cache_read_input_tokens,
+                                            );
+                                        } else {
+                                            tracing::warn!(
+                                                request_id = %tracker.request_id(),
+                                                "message_delta has no usage data"
+                                            );
+                                        }
+                                    }
+                                    _ => {}
+                                },
+                                Err(e) => {
+                                    tracing::warn!(
+                                        request_id = %tracker.request_id(),
+                                        event_type = %event_type,
+                                        error = %e,
+                                        raw_data = %data,
+                                        "Failed to parse StreamEvent JSON"
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    // Build the SSE event
+                    if !current_data_lines.is_empty() {
+                        let data = current_data_lines.join("\n");
+                        let mut event = Event::default().data(data);
+
+                        if let Some(event_type) = current_event_type {
+                            event = event.event(event_type);
+                        }
+
+                        events.push(Ok(event));
+                    }
+                }
+
+                drop(buf); // Release lock before returning
+                events
+            }
+            Err(e) => {
+                tracing::error!("Native Anthropic stream error: {}", e);
+                vec![Ok(Event::default().data(""))]
             }
         })
     });
