@@ -429,6 +429,29 @@ pub struct HealthDataPoint {
     pub failover_count: i32,
 }
 
+/// Response for model statistics endpoint
+#[derive(Debug, Serialize)]
+pub struct ModelsStatsResponse {
+    pub timestamp: String,         // ISO 8601 timestamp
+    pub date: String,              // YYYY-MM-DD
+    pub total_requests: i64,       // Total requests across all models
+    pub total_tokens: i64,         // Total tokens across all models
+    pub models: Vec<ModelStat>,
+}
+
+/// Statistics for a single model
+#[derive(Debug, Serialize)]
+pub struct ModelStat {
+    pub model: String,                          // Model name
+    pub requests: i64,                          // Number of requests
+    pub tokens: i64,                            // Total tokens
+    pub percentage: f64,                        // Percentage of total tokens (0.0-100.0)
+    pub input_tokens: i64,                      // Input tokens
+    pub output_tokens: i64,                     // Output tokens
+    pub cache_creation_input_tokens: i64,       // Cache creation input tokens
+    pub cache_read_input_tokens: i64,           // Cache read input tokens
+}
+
 /// GET /api/dashboard/instances-health - Get all provider instances health status
 ///
 /// Returns real-time health information for all provider instances including:
@@ -515,6 +538,83 @@ pub struct InstanceHealthDetail {
     pub downtime_last_24h_secs: u64,
 }
 
+/// GET /api/dashboard/models-stats
+///
+/// Returns today's model statistics including request counts, token usage,
+/// and percentage of total tokens per model.
+pub async fn get_models_stats(
+    State(state): State<DashboardState>,
+) -> Result<Json<ModelsStatsResponse>, AppError> {
+    let pool = state.db_pool.as_ref()
+        .ok_or_else(|| AppError::ConfigError("Observability not enabled".to_string()))?;
+
+    // Get today's date
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+
+    // Query per-model stats with detailed token breakdown
+    let model_rows = sqlx::query_as::<_, (String, i64, i64, i64, i64, i64, i64)>(
+        "SELECT
+            model,
+            COUNT(*) as requests,
+            COALESCE(SUM(total_tokens), 0) as tokens,
+            COALESCE(SUM(input_tokens), 0) as input_tokens,
+            COALESCE(SUM(output_tokens), 0) as output_tokens,
+            COALESCE(SUM(cache_creation_input_tokens), 0) as cache_creation_input_tokens,
+            COALESCE(SUM(cache_read_input_tokens), 0) as cache_read_input_tokens
+         FROM requests
+         WHERE date = ?1
+         GROUP BY model
+         ORDER BY tokens DESC"
+    )
+    .bind(&today)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| AppError::ConversionError(format!("Query failed: {}", e)))?;
+
+    // Query total tokens for percentage calculation
+    let total_tokens_row = sqlx::query_as::<_, (i64,)>(
+        "SELECT COALESCE(SUM(total_tokens), 0) FROM requests WHERE date = ?1"
+    )
+    .bind(&today)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| AppError::ConversionError(format!("Query failed: {}", e)))?;
+
+    let total_tokens = total_tokens_row.0;
+    let total_requests: i64 = model_rows.iter().map(|(_, r, _, _, _, _, _)| r).sum();
+
+    // Build model stats with percentage
+    let models: Vec<ModelStat> = model_rows
+        .into_iter()
+        .map(|(model, requests, tokens, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens)| {
+            let percentage = if total_tokens > 0 {
+                (tokens as f64 / total_tokens as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            ModelStat {
+                model,
+                requests,
+                tokens,
+                percentage,
+                input_tokens,
+                output_tokens,
+                cache_creation_input_tokens,
+                cache_read_input_tokens,
+            }
+        })
+        .collect();
+
+    Ok(Json(ModelsStatsResponse {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        date: today,
+        total_requests,
+        total_tokens,
+        models,
+    }))
+}
+
 /// Create the dashboard API router
 pub fn create_dashboard_router(state: DashboardState) -> Router {
     Router::new()
@@ -527,6 +627,8 @@ pub fn create_dashboard_router(state: DashboardState) -> Router {
         .route("/timeseries/health", axum::routing::get(get_timeseries_health))
         // Instance health monitoring
         .route("/instances-health", axum::routing::get(get_instances_health))
+        // Model statistics
+        .route("/models-stats", axum::routing::get(get_models_stats))
         .with_state(state)
 }
 

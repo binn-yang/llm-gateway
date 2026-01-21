@@ -120,6 +120,14 @@ export const dashboardApi = {
     const response = await apiClient.get<InstancesHealthResponse>('/dashboard/instances-health')
     return response.data
   },
+
+  /**
+   * Get today's model statistics
+   */
+  getModelsStats: async (): Promise<ModelsStatsResponse> => {
+    const response = await apiClient.get<ModelsStatsResponse>('/dashboard/models-stats')
+    return response.data
+  },
 }
 
 // ============================================================================
@@ -185,4 +193,27 @@ export interface InstanceHealthDetail {
 export interface InstancesHealthResponse {
   timestamp: string
   instances: InstanceHealthDetail[]
+}
+
+// ============================================================================
+// Model Statistics API Types
+// ============================================================================
+
+export interface ModelStat {
+  model: string
+  requests: number
+  tokens: number
+  percentage: number
+  input_tokens: number
+  output_tokens: number
+  cache_creation_input_tokens: number
+  cache_read_input_tokens: number
+}
+
+export interface ModelsStatsResponse {
+  timestamp: string
+  date: string
+  total_requests: number
+  total_tokens: number
+  models: ModelStat[]
 }

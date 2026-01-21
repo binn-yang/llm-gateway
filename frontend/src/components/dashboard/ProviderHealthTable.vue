@@ -2,10 +2,6 @@
   <div class="health-table-panel">
     <div class="panel-header">
       <h3 class="panel-title">PROVIDER INSTANCE HEALTH</h3>
-      <div class="panel-meta">
-        <span class="meta-label">REAL-TIME</span>
-        <div class="indicator-dot pulse" />
-      </div>
     </div>
 
     <div class="table-container">
@@ -47,24 +43,31 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, onMounted } from 'vue'
 import { dashboardApi, type InstanceHealthDetail } from '@/api/dashboard'
-import { usePolling } from '@/composables/usePolling'
-
-const { data: healthData } = usePolling<{ timestamp: string; instances: InstanceHealthDetail[] }>({
-  fn: () => dashboardApi.getInstancesHealth(),
-  interval: 5000,
-  autoStart: true,
-})
 
 const instances = ref<InstanceHealthDetail[]>([])
+const isLoading = ref(false)
 
-// Watch for data changes
-watch(healthData, (newData) => {
-  if (newData) {
-    instances.value = newData.instances
+async function fetchData() {
+  isLoading.value = true
+  try {
+    const data = await dashboardApi.getInstancesHealth()
+    instances.value = data.instances
+  } catch (error) {
+    console.error('Failed to fetch instance health:', error)
+  } finally {
+    isLoading.value = false
   }
-}, { immediate: true, deep: true })
+}
+
+onMounted(() => {
+  fetchData()
+})
+
+defineExpose({
+  refresh: fetchData
+})
 
 function formatDuration(secs: number): string {
   if (secs === 0) return '-'

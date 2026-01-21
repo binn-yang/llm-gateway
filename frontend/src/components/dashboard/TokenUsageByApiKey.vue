@@ -4,7 +4,6 @@
       <h3 class="panel-title">TOKEN USAGE BY API KEY</h3>
       <div class="panel-meta">
         <span class="meta-label">HOURLY</span>
-        <div class="indicator-dot pulse" />
       </div>
     </div>
 
@@ -18,21 +17,28 @@
 import { ref, watch, nextTick, onMounted } from 'vue'
 import { dashboardApi, type TimeseriesResponse, type TimeseriesDataPoint } from '@/api/dashboard'
 import { subDays, format, addDays } from 'date-fns'
-import { usePolling } from '@/composables/usePolling'
 
 const chartRef = ref<HTMLCanvasElement>()
 let chartInstance: any = null
 
-const { data: responseData } = usePolling<TimeseriesResponse>({
-  fn: () => dashboardApi.getTimeseriesTokens({
-    start_date: format(subDays(new Date(), 1), 'yyyy-MM-dd'),
-    end_date: format(addDays(new Date(), 1), 'yyyy-MM-dd'),
-    group_by: 'api_key',
-    interval: 'hour',
-  }),
-  interval: 30000,
-  autoStart: true,
-})
+const responseData = ref<TimeseriesResponse | null>(null)
+const isLoading = ref(false)
+
+async function fetchData() {
+  isLoading.value = true
+  try {
+    responseData.value = await dashboardApi.getTimeseriesTokens({
+      start_date: format(subDays(new Date(), 1), 'yyyy-MM-dd'),
+      end_date: format(addDays(new Date(), 1), 'yyyy-MM-dd'),
+      group_by: 'api_key',
+      interval: 'hour',
+    })
+  } catch (error) {
+    console.error('Failed to fetch token usage by API key:', error)
+  } finally {
+    isLoading.value = false
+  }
+}
 
 watch(responseData, (newData) => {
   if (newData && chartRef.value) {
@@ -265,6 +271,11 @@ onMounted(async () => {
   }
 
   tryCreateChart()
+  fetchData()
+})
+
+defineExpose({
+  refresh: fetchData
 })
 </script>
 

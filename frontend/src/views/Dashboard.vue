@@ -14,6 +14,7 @@
       <!-- Right Column -->
       <div class="column-right">
         <ProviderHealthTable />
+        <ModelStatsTable />
       </div>
     </div>
 
@@ -43,6 +44,7 @@ import SummaryCards from '@/components/dashboard/SummaryCards.vue'
 import TokenUsageByApiKey from '@/components/dashboard/TokenUsageByApiKey.vue'
 import TokenUsageByInstance from '@/components/dashboard/TokenUsageByInstance.vue'
 import ProviderHealthTable from '@/components/dashboard/ProviderHealthTable.vue'
+import ModelStatsTable from '@/components/dashboard/ModelStatsTable.vue'
 
 const uptime = ref('00:00:00')
 const lastUpdate = ref('-')

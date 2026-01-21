@@ -22,14 +22,29 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-import { usePolling } from '@/composables/usePolling'
+import { ref, computed, onMounted } from 'vue'
 import { dashboardApi, type DashboardSummary } from '@/api/dashboard'
 
-const { data: summaryData } = usePolling<DashboardSummary>({
-  fn: () => dashboardApi.getSummary(),
-  interval: 5000,
-  autoStart: true,
+const summaryData = ref<DashboardSummary | null>(null)
+const isLoading = ref(false)
+
+async function fetchData() {
+  isLoading.value = true
+  try {
+    summaryData.value = await dashboardApi.getSummary()
+  } catch (error) {
+    console.error('Failed to fetch summary data:', error)
+  } finally {
+    isLoading.value = false
+  }
+}
+
+onMounted(() => {
+  fetchData()
+})
+
+defineExpose({
+  refresh: fetchData
 })
 
 interface MetricCard {
