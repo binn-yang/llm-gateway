@@ -64,6 +64,17 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 
 [dev-dependencies]
 httpmock = "0.8"
+wiremock = "0.6"
+criterion = { version = "0.5", features = ["html_reports"] }
+tokio-test = "0.4"
+
+[[bench]]
+name = "load_balancer_bench"
+harness = false
+
+[[bench]]
+name = "conversion_bench"
+harness = false
 
 [profile.release]
 opt-level = 3

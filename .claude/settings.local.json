@@ -51,7 +51,8 @@
       "Bash(npm run build)",
       "Skill(frontend-design:frontend-design)",
       "Bash(for i in 1 2 3)",
-      "Bash(do)"
+      "Bash(do)",
+      "Bash(./run_stress_tests.sh:*)"
     ]
   }
 }
