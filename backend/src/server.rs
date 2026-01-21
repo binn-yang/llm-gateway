@@ -29,6 +29,9 @@ pub async fn start_server(config: Config) -> Result<()> {
     crate::init_tracing();
     tracing::info!("LLM Gateway starting...");
 
+    // Clean up old log files (7 days retention)
+    cleanup_old_logs(7);
+
     // Initialize observability (SQLite-based request logger)
     let (db_pool, request_logger) = if config.observability.enabled {
         tracing::info!(
@@ -431,5 +434,54 @@ mod tests {
 
         let _app = create_router(config_swap, app_state, None, load_balancers);
         // Router created successfully - no panic
+    }
+}
+
+// ============================================================================
+// Log File Management
+// ============================================================================
+
+/// Clean up old log files
+///
+/// Deletes log files older than the specified retention period.
+/// This function is called on server startup to ensure old logs don't accumulate.
+///
+/// # Arguments
+/// * `retention_days` - Number of days to keep logs (files older than this are deleted)
+fn cleanup_old_logs(retention_days: i64) {
+    use chrono::Duration;
+    use std::path::PathBuf;
+
+    let logs_dir = PathBuf::from("logs");
+    if !logs_dir.exists() {
+        return;
+    }
+
+    let cutoff_date = chrono::Utc::now() - Duration::days(retention_days);
+
+    if let Ok(entries) = std::fs::read_dir(logs_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                // 解析文件名中的日期：requests.2024-01-20
+                if filename.starts_with("requests.") {
+                    if let Some(date_str) = filename.strip_prefix("requests.") {
+                        if let Ok(file_date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                            if file_date.and_hms_opt(0, 0, 0).unwrap().and_utc() < cutoff_date {
+                                if let Err(e) = std::fs::remove_file(&path) {
+                                    tracing::warn!(
+                                        file = ?path,
+                                        error = %e,
+                                        "Failed to delete old log file"
+                                    );
+                                } else {
+                                    tracing::info!(file = ?path, "Deleted old log file");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

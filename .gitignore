@@ -27,6 +27,8 @@ config.toml
 
 # Logs
 *.log
+/backend/logs/
+/logs/
 
 # Runtime files
 /backend/run/

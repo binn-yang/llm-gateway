@@ -220,7 +220,75 @@ logger.log_request(RequestEvent {
 }).await;
 ```
 
-#### 6. Token Tracking (Enhanced in v0.4.0)
+#### 6. File-Based Logging System (NEW in v0.4.0)
+
+**Files**: `src/lib.rs` (log configuration), `src/handlers/dashboard_api.rs` (query API), `src/server.rs` (cleanup)
+
+Simple JSONL-based logging system for detailed request tracing:
+
+**Architecture**:
+- **Dual Output**: Console (human-readable) + Files (JSONL format)
+- **Async Writes**: Uses `tracing-appender::non_blocking` for zero-latency logging
+- **Daily Rotation**: Automatic file rotation by date (`requests.YYYY-MM-DD`)
+- **Auto Cleanup**: Deletes files older than 7 days on startup
+
+**File Format** (`logs/requests.YYYY-MM-DD`):
+```json
+{
+  "timestamp": "2026-01-21T12:26:52.912136Z",
+  "level": "INFO",
+  "fields": {"message": "Request started", "stream": false},
+  "target": "llm_gateway::handlers::messages",
+  "span": {
+    "request_id": "e23a4a4f-81bc-4366-ae50-b852d7493630",
+    "api_key_name": "y111",
+    "model": "claude-3-5-sonnet-20241022",
+    "endpoint": "/v1/messages",
+    "provider": "anthropic",
+    "instance": "anthropic-primary"
+  }
+}
+```
+
+**Key Features**:
+- **Request ID as Trace ID**: Every request gets a UUID that appears in logs, response headers (`X-Request-ID`), and database records
+- **Span Context**: Using `tracing::Span`, all logs within a request automatically include `request_id`, `api_key_name`, `model`, `provider`, `instance`
+- **Structured Logging**: JSONL format allows grep, jq, and other tools for analysis
+
+**Query API**:
+```bash
+# Get last 3 logs (default)
+GET /api/dashboard/logs
+
+# Get last 100 logs
+GET /api/dashboard/logs?limit=100
+
+# Trace query (all logs for a specific request)
+GET /api/dashboard/logs?request_id=e23a4a4f-81bc-4366-ae50-b852d7493630
+
+# Text search
+GET /api/dashboard/logs?grep=error
+
+# Specific date
+GET /api/dashboard/logs?date=2026-01-21
+```
+
+**Response**:
+```json
+{
+  "logs": [/* array of JSON log objects */],
+  "total": 3,
+  "files_searched": ["requests.2026-01-21"]
+}
+```
+
+**Implementation Notes**:
+- Logs are independent of SQLite database (requests table stores aggregated metrics, logs/ stores detailed traces)
+- `Box::leak` is used for `_guard` to keep log writer alive for application lifetime
+- Query API reads files directly (no database dependency)
+- Searches last 2 days by default (today + yesterday)
+
+#### 7. Token Tracking (Enhanced in v0.4.0)
 
 **Files**: `src/streaming.rs`, `src/handlers/*`
 
@@ -262,7 +330,7 @@ Complete token tracking including Anthropic prompt caching metrics:
 - `cache_read_input_tokens`: Tokens read from cache (-90% cost)
 - Regular tokens: `input_tokens - cache_creation - cache_read`
 
-#### 7. Metrics System
+#### 8. Metrics System
 
 **Files**: `src/observability/*` (SQLite-based)
 

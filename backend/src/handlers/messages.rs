@@ -28,6 +28,9 @@ pub async fn handle_messages(
 ) -> Result<Response, AppError> {
     let start = Instant::now();
 
+    // Generate a unique request ID
+    let request_id = uuid::Uuid::new_v4().to_string();
+
     // 尝试反序列化，记录错误详情
     let request: MessagesRequest = match serde_json::from_value(raw_request.clone()) {
         Ok(req) => req,
@@ -53,9 +56,19 @@ pub async fn handle_messages(
     let model = request.model.clone();
     let is_stream = request.stream.unwrap_or(false);
 
-    tracing::info!(
+    // Create request span with all context, so all subsequent logs include these fields
+    let span = tracing::info_span!(
+        "request",
+        request_id = %request_id,
         api_key_name = %auth.api_key_name,
         model = %model,
+        endpoint = "/v1/messages",
+        provider = tracing::field::Empty,
+        instance = tracing::field::Empty,
+    );
+    let _enter = span.enter();
+
+    tracing::info!(
         stream = is_stream,
         "Handling native Anthropic messages request"
     );
@@ -63,8 +76,10 @@ pub async fn handle_messages(
     // 1. 路由到 provider
     let route_info = state.router.route(&model)?;
 
+    // Record provider in span
+    span.record("provider", route_info.provider.to_string().as_str());
+
     tracing::debug!(
-        provider = %route_info.provider,
         "Routed model to provider"
     );
 
@@ -128,13 +143,13 @@ pub async fn handle_messages(
     let response = session_result.result?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
+    // Record instance in span
+    span.record("instance", instance_name.as_str());
+
     // 4. 根据 stream 参数处理响应
     if is_stream {
         // Stream response with usage tracking
         tracing::debug!("Streaming native Anthropic SSE response");
-
-        // Generate request ID and log initial request (with 0 tokens)
-        let request_id = uuid::Uuid::new_v4().to_string();
 
         if let Some(logger) = &state.request_logger {
             let now_utc = Utc::now();
@@ -173,11 +188,12 @@ pub async fn handle_messages(
 
         // Spawn background task to update tokens when stream completes
         if let Some(logger) = state.request_logger.clone() {
+            let request_id_owned = request_id.clone();
             tokio::spawn(async move {
                 // Wait for tracker to notify completion (no polling/sleeping!)
                 if let Some((input, output, cache_creation, cache_read)) = tracker.wait_for_completion().await {
                     logger.update_tokens(
-                        &request_id,
+                        &request_id_owned,
                         input as i64,
                         output as i64,
                         (input + output) as i64,
@@ -186,7 +202,7 @@ pub async fn handle_messages(
                     ).await;
                 } else {
                     tracing::warn!(
-                        request_id = %request_id,
+                        request_id = %request_id_owned,
                         provider = "anthropic",
                         endpoint = "/v1/messages",
                         "Stream completed without token usage data"
@@ -205,7 +221,7 @@ pub async fn handle_messages(
             let now_utc = Utc::now();
             let now_local = Local::now();
             let event = RequestEvent {
-                request_id: uuid::Uuid::new_v4().to_string(),
+                request_id: request_id.clone(),
                 timestamp: now_utc.timestamp_millis(),
                 date: now_local.format("%Y-%m-%d").to_string(),
                 hour: now_local.hour() as i32,
@@ -244,6 +260,14 @@ pub async fn handle_messages(
             "Completed native Anthropic messages request"
         );
 
-        Ok(Json(body).into_response())
+        let mut response = Json(body).into_response();
+
+        // Add X-Request-ID header to response
+        response.headers_mut().insert(
+            "X-Request-ID",
+            request_id.parse().unwrap_or_else(|_| "invalid".parse().unwrap()),
+        );
+
+        Ok(response)
     }
 }

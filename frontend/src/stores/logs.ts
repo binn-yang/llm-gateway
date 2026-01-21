@@ -5,14 +5,12 @@ import { logsApi, type LogEntry, type LogsQueryParams } from '@/api/logs'
 export const useLogsStore = defineStore('logs', () => {
   const logs = ref<LogEntry[]>([])
   const total = ref(0)
+  const filesSearched = ref<string[]>([])
   const loading = ref(false)
-  const error = ref<Error | null>(null)
+  const error = ref<string | null>(null)
 
   const filters = ref<LogsQueryParams>({
-    limit: 100,
-    level: undefined,
-    since_seconds: 3600,
-    grep: undefined,
+    limit: 3, // 默认3条
   })
 
   async function fetchLogs(params?: LogsQueryParams) {
@@ -25,13 +23,14 @@ export const useLogsStore = defineStore('logs', () => {
 
       logs.value = response.logs
       total.value = response.total
+      filesSearched.value = response.files_searched
 
       // Update filters with actual params used
       if (params) {
         filters.value = { ...filters.value, ...params }
       }
-    } catch (err) {
-      error.value = err as Error
+    } catch (err: any) {
+      error.value = err.message || '获取日志失败'
       console.error('Failed to fetch logs:', err)
     } finally {
       loading.value = false
@@ -44,16 +43,14 @@ export const useLogsStore = defineStore('logs', () => {
 
   function resetFilters() {
     filters.value = {
-      limit: 100,
-      level: undefined,
-      since_seconds: 3600,
-      grep: undefined,
+      limit: 3,
     }
   }
 
   return {
     logs,
     total,
+    filesSearched,
     loading,
     error,
     filters,

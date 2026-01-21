@@ -15,18 +15,6 @@ const routes: RouteRecordRaw[] = [
     meta: { title: 'Logs' },
   },
   {
-    path: '/traces',
-    name: 'Traces',
-    component: () => import('@/views/Traces.vue'),
-    meta: { title: 'Traces' },
-  },
-  {
-    path: '/traces/:requestId',
-    name: 'TraceDetail',
-    component: () => import('@/views/TraceDetail.vue'),
-    meta: { title: 'Trace Detail' },
-  },
-  {
     path: '/settings',
     name: 'Settings',
     component: () => import('@/views/Settings.vue'),

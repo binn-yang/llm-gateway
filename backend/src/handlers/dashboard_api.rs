@@ -615,6 +615,135 @@ pub async fn get_models_stats(
     }))
 }
 
+// ============================================================================
+// Logs Query API
+// ============================================================================
+
+/// Query parameters for logs API
+#[derive(Debug, Deserialize)]
+pub struct LogsQueryParams {
+    pub limit: Option<usize>,      // 默认3，最大1000
+    pub request_id: Option<String>, // Trace查询：按request_id过滤
+    pub grep: Option<String>,       // 简单文本搜索
+    pub date: Option<String>,       // 指定日期 YYYY-MM-DD
+}
+
+/// Response for logs query
+#[derive(Debug, Serialize)]
+pub struct LogsResponse {
+    pub logs: Vec<serde_json::Value>,  // 原始JSON对象
+    pub total: usize,
+    pub files_searched: Vec<String>,   // 搜索了哪些文件
+}
+
+/// GET /api/logs - Query logs from JSONL files
+///
+/// Query parameters:
+/// - limit: Number of logs to return (default: 3, max: 1000)
+/// - request_id: Filter by request ID (trace query)
+/// - grep: Simple text search
+/// - date: Filter by specific date (YYYY-MM-DD format)
+pub async fn get_logs(
+    Query(params): Query<LogsQueryParams>,
+) -> Result<Json<LogsResponse>, AppError> {
+    let limit = params.limit.unwrap_or(3).min(1000);
+
+    // 确定要搜索的日志文件
+    let files = get_log_files_to_search(&params.date)?;
+
+    let mut all_lines = Vec::new();
+    let mut files_searched = Vec::new();
+
+    // 读取所有相关文件
+    for file_path in files {
+        if !file_path.exists() {
+            continue;
+        }
+
+        files_searched.push(
+            file_path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        );
+
+        let file = std::fs::File::open(&file_path)
+            .map_err(|e| AppError::InternalError(format!("Failed to open log file: {}", e)))?;
+        let reader = std::io::BufReader::new(file);
+
+        use std::io::BufRead;
+        for line in reader.lines() {
+            let line = line.map_err(|e|
+                AppError::InternalError(format!("Failed to read log line: {}", e)))?;
+
+            // 应用过滤器
+            if should_include_line(&line, &params) {
+                all_lines.push(line);
+            }
+        }
+    }
+
+    // 反向排序（最新的在前）
+    all_lines.reverse();
+
+    // 限制数量
+    all_lines.truncate(limit);
+
+    // 解析JSON
+    let logs: Vec<serde_json::Value> = all_lines
+        .into_iter()
+        .filter_map(|line| serde_json::from_str(&line).ok())
+        .collect();
+
+    Ok(Json(LogsResponse {
+        total: logs.len(),
+        logs,
+        files_searched,
+    }))
+}
+
+/// 确定要搜索哪些日志文件
+fn get_log_files_to_search(date_filter: &Option<String>) -> Result<Vec<std::path::PathBuf>, AppError> {
+    use std::path::PathBuf;
+    let mut files = Vec::new();
+
+    if let Some(date_str) = date_filter {
+        // 搜索特定日期的文件
+        let file_path = PathBuf::from(format!("logs/requests.{}", date_str));
+        files.push(file_path);
+    } else {
+        // 搜索最近2天的文件（今天+昨天）
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let yesterday = (chrono::Utc::now() - chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        files.push(PathBuf::from(format!("logs/requests.{}", today)));
+        files.push(PathBuf::from(format!("logs/requests.{}", yesterday)));
+    }
+
+    Ok(files)
+}
+
+/// 判断是否应该包含这一行
+fn should_include_line(line: &str, params: &LogsQueryParams) -> bool {
+    // request_id过滤
+    if let Some(ref request_id) = params.request_id {
+        if !line.contains(request_id) {
+            return false;
+        }
+    }
+
+    // grep文本搜索
+    if let Some(ref grep) = params.grep {
+        if !line.contains(grep) {
+            return false;
+        }
+    }
+
+    true
+}
+
 /// Create the dashboard API router
 pub fn create_dashboard_router(state: DashboardState) -> Router {
     Router::new()
@@ -629,6 +758,8 @@ pub fn create_dashboard_router(state: DashboardState) -> Router {
         .route("/instances-health", axum::routing::get(get_instances_health))
         // Model statistics
         .route("/models-stats", axum::routing::get(get_models_stats))
+        // Logs query (stateless, reads from JSONL files)
+        .route("/logs", axum::routing::get(get_logs))
         .with_state(state)
 }
 

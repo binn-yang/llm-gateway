@@ -45,10 +45,19 @@ pub async fn handle_chat_completions(
     // Generate a unique request ID
     let request_id = uuid::Uuid::new_v4().to_string();
 
-    tracing::info!(
+    // Create request span with all context, so all subsequent logs include these fields
+    let span = tracing::info_span!(
+        "request",
         request_id = %request_id,
         api_key_name = %auth.api_key_name,
         model = %model,
+        endpoint = "/v1/chat/completions",
+        provider = tracing::field::Empty,
+        instance = tracing::field::Empty,
+    );
+    let _enter = span.enter();
+
+    tracing::info!(
         stream = is_stream,
         "Handling chat completion request"
     );
@@ -56,8 +65,10 @@ pub async fn handle_chat_completions(
     // Route to provider
     let route_info = state.router.route(&model)?;
 
+    // Record provider in span
+    span.record("provider", route_info.provider.to_string().as_str());
+
     tracing::debug!(
-        provider = %route_info.provider,
         requires_conversion = route_info.requires_conversion,
         "Routed model to provider"
     );
@@ -65,13 +76,13 @@ pub async fn handle_chat_completions(
     // Route based on provider (model name is passed through directly)
     let mut response = match route_info.provider {
         Provider::OpenAI => {
-            handle_openai_request(&state, &auth, request, is_stream, &model, start).await
+            handle_openai_request(&state, &auth, request, is_stream, &model, &request_id, start, &span).await
         }
         Provider::Anthropic => {
-            handle_anthropic_request(&state, &auth, request, is_stream, &model, start).await
+            handle_anthropic_request(&state, &auth, request, is_stream, &model, &request_id, start, &span).await
         }
         Provider::Gemini => {
-            handle_gemini_request(&state, &auth, request, is_stream, &model, start).await
+            handle_gemini_request(&state, &auth, request, is_stream, &model, &request_id, start, &span).await
         }
     }?;
 
@@ -90,7 +101,9 @@ async fn handle_openai_request(
     request: ChatCompletionRequest,
     is_stream: bool,
     model: &str,
+    request_id: &str,
     start: Instant,
+    span: &tracing::Span,
 ) -> Result<Response, AppError> {
     // Get LoadBalancer for OpenAI provider
     let load_balancers_map = state.load_balancers.load();
@@ -126,18 +139,18 @@ async fn handle_openai_request(
     let response = session_result.result?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
+    // Record instance in span
+    span.record("instance", instance_name.as_str());
+
     if is_stream {
         // Stream response with usage tracking
         tracing::debug!("Streaming response from OpenAI");
-
-        // Generate request ID and log initial request (with 0 tokens)
-        let request_id = uuid::Uuid::new_v4().to_string();
 
         if let Some(logger) = &state.request_logger {
             let now_utc = Utc::now();
             let now_local = Local::now();
             let event = RequestEvent {
-                request_id: request_id.clone(),
+                request_id: request_id.to_string(),
                 timestamp: now_utc.timestamp_millis(),
                 date: now_local.format("%Y-%m-%d").to_string(),
                 hour: now_local.hour() as i32,
@@ -165,16 +178,17 @@ async fn handle_openai_request(
         }
 
         // Create tracker and stream with usage tracking
-        let tracker = streaming::StreamingUsageTracker::new(request_id.clone());
+        let tracker = streaming::StreamingUsageTracker::new(request_id.to_string());
         let sse_stream = streaming::create_openai_sse_stream_with_tracker(response, tracker.clone());
 
         // Spawn background task to update tokens when stream completes
         if let Some(logger) = state.request_logger.clone() {
+            let request_id_owned = request_id.to_string();
             tokio::spawn(async move {
                 // Wait for tracker to notify completion (no polling/sleeping!)
                 if let Some((input, output, cache_creation, cache_read)) = tracker.wait_for_completion().await {
                     logger.update_tokens(
-                        &request_id,
+                        &request_id_owned,
                         input as i64,
                         output as i64,
                         (input + output) as i64,
@@ -183,7 +197,7 @@ async fn handle_openai_request(
                     ).await;
                 } else {
                     tracing::warn!(
-                        request_id = %request_id,
+                        request_id = %request_id_owned,
                         "Stream completed without token usage data"
                     );
                 }
@@ -210,7 +224,7 @@ async fn handle_openai_request(
             let now_utc = Utc::now();
             let now_local = Local::now();
             let event = RequestEvent {
-                request_id: uuid::Uuid::new_v4().to_string(),
+                request_id: request_id.to_string(),
                 timestamp: now_utc.timestamp_millis(),
                 date: now_local.format("%Y-%m-%d").to_string(),
                 hour: now_local.hour() as i32,
@@ -257,7 +271,9 @@ async fn handle_anthropic_request(
     openai_request: ChatCompletionRequest,
     is_stream: bool,
     model: &str,
+    request_id: &str,
     start: Instant,
+    span: &tracing::Span,
 ) -> Result<Response, AppError> {
     // Convert OpenAI request to Anthropic format
     let (mut anthropic_request, conversion_warnings) = converters::openai_to_anthropic::convert_request(&openai_request).await?;
@@ -307,18 +323,18 @@ async fn handle_anthropic_request(
     let response = session_result.result?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
+    // Record instance in span
+    span.record("instance", instance_name.as_str());
+
     if is_stream {
         // Stream response with usage tracking
         tracing::debug!("Streaming response from Anthropic");
-
-        // Generate request ID and log initial request (with 0 tokens)
-        let request_id = uuid::Uuid::new_v4().to_string();
 
         if let Some(logger) = &state.request_logger {
             let now_utc = Utc::now();
             let now_local = Local::now();
             let event = RequestEvent {
-                request_id: request_id.clone(),
+                request_id: request_id.to_string(),
                 timestamp: now_utc.timestamp_millis(),
                 date: now_local.format("%Y-%m-%d").to_string(),
                 hour: now_local.hour() as i32,
@@ -346,8 +362,8 @@ async fn handle_anthropic_request(
         }
 
         // Create tracker and stream with usage tracking
-        let tracker = streaming::StreamingUsageTracker::new(request_id.clone());
-        let mut response = streaming::create_anthropic_sse_stream_with_tracker(response, request_id.clone(), tracker.clone()).into_response();
+        let tracker = streaming::StreamingUsageTracker::new(request_id.to_string());
+        let mut response = streaming::create_anthropic_sse_stream_with_tracker(response, request_id.to_string(), tracker.clone()).into_response();
 
         // Add warnings header if present
         if let Some(warnings_json) = conversion_warnings.to_header_value() {
@@ -359,11 +375,12 @@ async fn handle_anthropic_request(
 
         // Spawn background task to update tokens when stream completes
         if let Some(logger) = state.request_logger.clone() {
+            let request_id_owned = request_id.to_string();
             tokio::spawn(async move {
                 // Wait for tracker to notify completion (no polling/sleeping!)
                 if let Some((input, output, cache_creation, cache_read)) = tracker.wait_for_completion().await {
                     logger.update_tokens(
-                        &request_id,
+                        &request_id_owned,
                         input as i64,
                         output as i64,
                         (input + output) as i64,
@@ -372,7 +389,7 @@ async fn handle_anthropic_request(
                     ).await;
                 } else {
                     tracing::warn!(
-                        request_id = %request_id,
+                        request_id = %request_id_owned,
                         provider = "anthropic",
                         "Stream completed without token usage data"
                     );
@@ -413,7 +430,7 @@ async fn handle_anthropic_request(
             let now_utc = Utc::now();
             let now_local = Local::now();
             let event = RequestEvent {
-                request_id: uuid::Uuid::new_v4().to_string(),
+                request_id: request_id.to_string(),
                 timestamp: now_utc.timestamp_millis(),
                 date: now_local.format("%Y-%m-%d").to_string(),
                 hour: now_local.hour() as i32,
@@ -470,7 +487,9 @@ async fn handle_gemini_request(
     openai_request: ChatCompletionRequest,
     is_stream: bool,
     model: &str,
+    request_id: &str,
     start: Instant,
+    span: &tracing::Span,
 ) -> Result<Response, AppError> {
     // Convert OpenAI request to Gemini format
     let (gemini_request, conversion_warnings) = converters::openai_to_gemini::convert_request(&openai_request).await?;
@@ -523,18 +542,18 @@ async fn handle_gemini_request(
     let response = session_result.result?;
     let duration_ms = start.elapsed().as_millis() as i64;
 
+    // Record instance in span
+    span.record("instance", instance_name.as_str());
+
     if is_stream {
         // Stream response with usage tracking
         tracing::debug!("Streaming response from Gemini");
-
-        // Generate request ID and log initial request (with 0 tokens)
-        let request_id = uuid::Uuid::new_v4().to_string();
 
         if let Some(logger) = &state.request_logger {
             let now_utc = Utc::now();
             let now_local = Local::now();
             let event = RequestEvent {
-                request_id: request_id.clone(),
+                request_id: request_id.to_string(),
                 timestamp: now_utc.timestamp_millis(),
                 date: now_local.format("%Y-%m-%d").to_string(),
                 hour: now_local.hour() as i32,
@@ -562,8 +581,8 @@ async fn handle_gemini_request(
         }
 
         // Create tracker and stream with usage tracking
-        let tracker = streaming::StreamingUsageTracker::new(request_id.clone());
-        let mut response = streaming::create_gemini_sse_stream_with_tracker(response, request_id.clone(), tracker.clone()).into_response();
+        let tracker = streaming::StreamingUsageTracker::new(request_id.to_string());
+        let mut response = streaming::create_gemini_sse_stream_with_tracker(response, request_id.to_string(), tracker.clone()).into_response();
 
         // Add warnings header if present
         if let Some(warnings_json) = conversion_warnings.to_header_value() {
@@ -575,11 +594,12 @@ async fn handle_gemini_request(
 
         // Spawn background task to update tokens when stream completes
         if let Some(logger) = state.request_logger.clone() {
+            let request_id_owned = request_id.to_string();
             tokio::spawn(async move {
                 // Wait for tracker to notify completion (no polling/sleeping!)
                 if let Some((input, output, cache_creation, cache_read)) = tracker.wait_for_completion().await {
                     logger.update_tokens(
-                        &request_id,
+                        &request_id_owned,
                         input as i64,
                         output as i64,
                         (input + output) as i64,
@@ -588,7 +608,7 @@ async fn handle_gemini_request(
                     ).await;
                 } else {
                     tracing::warn!(
-                        request_id = %request_id,
+                        request_id = %request_id_owned,
                         provider = "gemini",
                         "Stream completed without token usage data"
                     );
@@ -625,7 +645,7 @@ async fn handle_gemini_request(
             let now_utc = Utc::now();
             let now_local = Local::now();
             let event = RequestEvent {
-                request_id: uuid::Uuid::new_v4().to_string(),
+                request_id: request_id.to_string(),
                 timestamp: now_utc.timestamp_millis(),
                 date: now_local.format("%Y-%m-%d").to_string(),
                 hour: now_local.hour() as i32,

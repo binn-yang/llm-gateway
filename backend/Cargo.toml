@@ -38,6 +38,7 @@ nix = { version = "0.27", features = ["signal"] }
 # 日志与追踪
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-appender = "0.2"
 
 # SQLite 数据库
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "migrate"] }
