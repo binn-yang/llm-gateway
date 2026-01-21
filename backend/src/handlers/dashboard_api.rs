@@ -247,35 +247,6 @@ pub async fn get_timeseries_tokens(
 /// Query parameters:
 /// - start_date: YYYY-MM-DD (required)
 /// - end_date: YYYY-MM-DD (optional, defaults to today)
-/// - instance: string (optional, filter by specific instance)
-pub async fn get_timeseries_health(
-    State(state): State<DashboardState>,
-    Query(params): Query<HealthTimeseriesQuery>,
-) -> Result<Json<HealthTimeseriesResponse>, AppError> {
-    let pool = state.db_pool.as_ref()
-        .ok_or_else(|| AppError::ConfigError("Observability not enabled".to_string()))?;
-
-    let start_date = parse_date(&params.start_date)?;
-    let end_date = params.end_date
-        .as_ref()
-        .map(|d| parse_date(d))
-        .transpose()?
-        .unwrap_or_else(|| chrono::Utc::now().date_naive());
-
-    let data = query_instance_health_timeseries(
-        pool,
-        start_date,
-        end_date,
-        params.instance.as_deref()
-    ).await?;
-
-    Ok(Json(HealthTimeseriesResponse {
-        start_date: start_date.to_string(),
-        end_date: end_date.to_string(),
-        data,
-    }))
-}
-
 // ============================================================================
 // Query Implementations
 // ============================================================================
@@ -330,48 +301,6 @@ async fn query_token_usage_timeseries(
     }).collect())
 }
 
-/// Query instance health time-series from SQLite
-async fn query_instance_health_timeseries(
-    pool: &SqlitePool,
-    start_date: NaiveDate,
-    end_date: NaiveDate,
-    instance_filter: Option<&str>,
-) -> Result<Vec<HealthDataPoint>, AppError> {
-    let mut query_str = r#"
-        SELECT
-            provider,
-            instance,
-            date || 'T' || printf('%02d', hour) || ':00:00' as timestamp,
-            health_status,
-            failover_count
-        FROM instance_health
-        WHERE date >= ?1 AND date <= ?2
-    "#.to_string();
-
-    if let Some(instance) = instance_filter {
-        query_str.push_str(&format!(" AND instance = '{}' ", instance));
-    }
-
-    query_str.push_str("ORDER BY date, hour");
-
-    let rows = sqlx::query_as::<_, (String, String, String, String, i32)>(&query_str)
-        .bind(start_date.to_string())
-        .bind(end_date.to_string())
-        .fetch_all(pool)
-        .await
-        .map_err(|e| AppError::ConversionError(format!("Query failed: {}", e)))?;
-
-    Ok(rows.into_iter().map(|(provider, instance, timestamp, health_status, failover_count)| {
-        HealthDataPoint {
-            provider,
-            instance,
-            timestamp,
-            health_status,
-            failover_count,
-        }
-    }).collect())
-}
-
 /// Parse date string in YYYY-MM-DD format
 fn parse_date(date_str: &str) -> Result<NaiveDate, AppError> {
     NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
@@ -404,29 +333,6 @@ pub struct TimeseriesDataPoint {
     pub label: String,
     pub timestamp: String,
     pub value: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct HealthTimeseriesQuery {
-    pub start_date: String,
-    pub end_date: Option<String>,
-    pub instance: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct HealthTimeseriesResponse {
-    pub start_date: String,
-    pub end_date: String,
-    pub data: Vec<HealthDataPoint>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct HealthDataPoint {
-    pub provider: String,
-    pub instance: String,
-    pub timestamp: String,
-    pub health_status: String,
-    pub failover_count: i32,
 }
 
 /// Response for model statistics endpoint
@@ -753,7 +659,6 @@ pub fn create_dashboard_router(state: DashboardState) -> Router {
         .route("/summary", axum::routing::get(get_summary))
         // Time-series endpoints
         .route("/timeseries/tokens", axum::routing::get(get_timeseries_tokens))
-        .route("/timeseries/health", axum::routing::get(get_timeseries_health))
         // Instance health monitoring
         .route("/instances-health", axum::routing::get(get_instances_health))
         // Model statistics
