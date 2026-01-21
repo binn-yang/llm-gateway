@@ -1,0 +1,21 @@
+# Cross-compilation 配置文件
+# 用于在 macOS 上构建 Linux 二进制文件
+#
+# 注意：必须从项目根目录运行 cross（不是 backend 目录），
+# 这样 frontend/dist 才能被挂载到容器中供 rust-embed 使用。
+#
+# 正确用法：
+#   cross build --manifest-path backend/Cargo.toml --target x86_64-unknown-linux-gnu --release
+#
+# 错误用法：
+#   cd backend && cross build --target x86_64-unknown-linux-gnu --release
+#   （这会导致 rust-embed 找不到 ../frontend/dist/）
+
+[target.x86_64-unknown-linux-gnu]
+# 使用 CentOS 7 兼容镜像，兼容大多数 Linux 发行版（glibc 2.17+）
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-gnu:main-centos"
+
+[target.x86_64-unknown-linux-musl]
+# MUSL 版本用于完全静态链接（更好的可移植性）
+# 无需任何系统库依赖，可在任何 Linux 发行版运行
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl:latest"

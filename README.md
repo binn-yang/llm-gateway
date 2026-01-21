@@ -730,9 +730,66 @@ cargo test --test caching_tests
 
 ### Building Release Binary
 
+#### Quick Start (macOS Development)
+
 ```bash
+# Fast development builds (debug profile, ~30s-1min)
+cd backend
+cargo build
+cargo run
+
+# macOS production build
 cargo build --release
+# Output: backend/target/release/llm-gateway
 ```
+
+#### Cross-Platform Compilation (Linux)
+
+The project supports cross-compilation to build Linux binaries from macOS.
+
+**First-time setup:**
+
+```bash
+# 1. Install Linux target
+rustup target add x86_64-unknown-linux-gnu
+
+# 2. Install cross tool (requires Docker)
+cargo install cross --git https://github.com/cross-rs/cross
+
+# 3. Done! Now you can build for Linux
+```
+
+**Building Linux binaries:**
+
+```bash
+# Option 1: Use the build script (recommended)
+./scripts/build-linux.sh
+
+# Option 2: Direct command (must run from project root!)
+cross build \
+    --manifest-path backend/Cargo.toml \
+    --target x86_64-unknown-linux-gnu \
+    --release
+# Output: backend/target/x86_64-unknown-linux-gnu/release/llm-gateway
+
+# Option 3: Fully static Linux binary (no system dependencies)
+cross build \
+    --manifest-path backend/Cargo.toml \
+    --target x86_64-unknown-linux-musl \
+    --release
+# Output: backend/target/x86_64-unknown-linux-musl/release/llm-gateway
+```
+
+**Important:** When using `cross` directly, always run it from the **project root directory** (not the `backend` directory), and use `--manifest-path backend/Cargo.toml`. This ensures that `frontend/dist` is accessible to the build container for embedding.
+
+**Binary sizes:**
+- macOS (release): ~10MB
+- Linux (release): ~10MB
+- Linux MUSL (static): ~12MB
+
+**Troubleshooting:**
+
+If you encounter OpenSSL-related errors, ensure you're using the latest code which has switched from `native-tls` to `rustls` (pure Rust SSL implementation).
 
 For more documentation:
 - **[IMPLEMENTATION.md](docs/IMPLEMENTATION.md)** - Complete implementation details and architecture
