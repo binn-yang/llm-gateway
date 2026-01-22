@@ -141,6 +141,12 @@ fn create_router(
     db_pool: Option<SqlitePool>,
     load_balancers: Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<LoadBalancer>>>>,
 ) -> Router {
+    // Create auth middleware state
+    let auth_state = Arc::new(auth::AuthMiddlewareState {
+        config: config.clone(),
+        db_pool: db_pool.clone(),
+    });
+
     // Create authenticated routes
     let auth_routes = Router::new()
         .route(
@@ -153,7 +159,7 @@ fn create_router(
         )
         .route("/v1/models", get(handlers::models::list_models))
         .layer(middleware::from_fn_with_state(
-            config.clone(),
+            auth_state,
             auth::auth_middleware,
         ))
         .with_state(app_state);
@@ -161,18 +167,31 @@ fn create_router(
     // Create dashboard API routes
     let dashboard_state = handlers::dashboard_api::DashboardState {
         config: config.clone(),
-        db_pool,
+        db_pool: db_pool.clone(),
         load_balancers: load_balancers.clone(),
     };
     let dashboard_routes = handlers::dashboard_api::create_dashboard_router(dashboard_state);
 
     // Build app with all routes
-    let app = Router::new()
+    let mut app = Router::new()
         // Public endpoints (no auth required)
         .route("/health", get(handlers::health::health_check))
         .route("/ready", get(handlers::health::readiness_check))
         // Dashboard API
-        .nest("/api/dashboard", dashboard_routes)
+        .nest("/api/dashboard", dashboard_routes);
+
+    // Config API (only if database is available)
+    if let Some(pool) = db_pool {
+        let config_api_state = handlers::config_api::ConfigApiState {
+            db_pool: pool,
+            config: config.clone(),
+            load_balancers: load_balancers.clone(),
+        };
+        let config_routes = handlers::config_api::create_config_router(config_api_state);
+        app = app.nest("/api/config", config_routes);
+    }
+
+    let app = app
         // Dashboard frontend (SPA - must be last as a fallback)
         .route("/assets/*path", get(static_files::serve_static))
         .route("/", get(static_files::serve_index))

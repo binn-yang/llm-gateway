@@ -19,6 +19,17 @@ pub struct ServerConfig {
     pub log_format: String,
 }
 
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            host: "0.0.0.0".to_string(),
+            port: 8080,
+            log_level: "info".to_string(),
+            log_format: "json".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ApiKeyConfig {
     pub key: String,
@@ -33,12 +44,33 @@ pub struct RoutingConfig {
     pub discovery: DiscoveryConfig,
 }
 
+impl Default for RoutingConfig {
+    fn default() -> Self {
+        Self {
+            rules: HashMap::new(),
+            default_provider: Some("openai".to_string()),
+            discovery: DiscoveryConfig::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DiscoveryConfig {
     pub enabled: bool,
     pub cache_ttl_seconds: u64,
     pub refresh_on_startup: bool,
     pub providers_with_listing: Vec<String>,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cache_ttl_seconds: 3600,
+            refresh_on_startup: true,
+            providers_with_listing: vec!["openai".to_string()],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -49,6 +81,16 @@ pub struct ProvidersConfig {
     pub anthropic: Vec<AnthropicInstanceConfig>,
     #[serde(default)]
     pub gemini: Vec<ProviderInstanceConfig>,
+}
+
+impl Default for ProvidersConfig {
+    fn default() -> Self {
+        Self {
+            openai: vec![],
+            anthropic: vec![],
+            gemini: vec![],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

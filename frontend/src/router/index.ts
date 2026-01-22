@@ -15,6 +15,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: 'Logs' },
   },
   {
+    path: '/config',
+    name: 'Configuration',
+    component: () => import('@/views/ConfigManagement.vue'),
+    meta: { title: 'Configuration' },
+  },
+  {
     path: '/settings',
     name: 'Settings',
     component: () => import('@/views/Settings.vue'),

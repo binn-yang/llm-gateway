@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod config;
+pub mod config_db;
 pub mod conversion_warnings;
 pub mod converters;
 pub mod error;

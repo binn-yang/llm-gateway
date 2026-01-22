@@ -49,6 +49,7 @@ interface Route {
 const routes: Route[] = [
   { name: 'Dashboard', path: '/', meta: { title: 'Dashboard' } },
   { name: 'Logs', path: '/logs', meta: { title: 'Logs' } },
+  { name: 'Configuration', path: '/config', meta: { title: 'Configuration' } },
   { name: 'Settings', path: '/settings', meta: { title: 'Settings' } },
 ]
 

@@ -55,9 +55,10 @@ pub async fn handle_chat_completions(
         provider = tracing::field::Empty,
         instance = tracing::field::Empty,
     );
-    let _enter = span.enter();
+    // Keep span alive for recording fields, but don't enter it to avoid async lifecycle issues
 
     tracing::info!(
+        parent: &span,
         stream = is_stream,
         "Handling chat completion request"
     );

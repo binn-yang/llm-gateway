@@ -56,7 +56,7 @@ pub async fn handle_messages(
     let model = request.model.clone();
     let is_stream = request.stream.unwrap_or(false);
 
-    // Create request span with all context, so all subsequent logs include these fields
+    // Create request span for structured logging
     let span = tracing::info_span!(
         "request",
         request_id = %request_id,
@@ -66,9 +66,11 @@ pub async fn handle_messages(
         provider = tracing::field::Empty,
         instance = tracing::field::Empty,
     );
-    let _enter = span.enter();
+    // Keep span alive for recording fields later, but don't enter it
+    // to avoid async lifecycle issues
 
     tracing::info!(
+        parent: &span,
         stream = is_stream,
         "Handling native Anthropic messages request"
     );
