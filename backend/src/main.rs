@@ -50,10 +50,6 @@ async fn main() -> Result<()> {
         cli::Commands::Test => {
             commands::test::execute()?;
         }
-        cli::Commands::Config { action } => match action {
-            cli::ConfigCommands::Show => commands::config::show()?,
-            cli::ConfigCommands::Validate => commands::config::validate()?,
-        },
         cli::Commands::Version => {
             println!("LLM Gateway v{}", env!("CARGO_PKG_VERSION"));
             println!("Rust {}", env!("CARGO_PKG_RUST_VERSION"));

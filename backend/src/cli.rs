@@ -50,23 +50,8 @@ pub enum Commands {
     /// Test configuration file validity
     Test,
 
-    /// Configuration management commands
-    Config {
-        #[command(subcommand)]
-        action: ConfigCommands,
-    },
-
     /// Show version information
     Version,
-}
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum ConfigCommands {
-    /// Display current configuration (with secrets masked)
-    Show,
-
-    /// Validate configuration file
-    Validate,
 }
 
 impl Cli {
