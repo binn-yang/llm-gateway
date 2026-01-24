@@ -50,6 +50,9 @@ async fn main() -> Result<()> {
         cli::Commands::Test => {
             commands::test::execute()?;
         }
+        cli::Commands::Stats { hours, detailed } => {
+            commands::stats::execute(hours, detailed).await?;
+        }
         cli::Commands::Version => {
             println!("LLM Gateway v{}", env!("CARGO_PKG_VERSION"));
             println!("Rust {}", env!("CARGO_PKG_RUST_VERSION"));

@@ -30,6 +30,7 @@ config = "0.14"
 
 # CLI and Process Management
 clap = { version = "4.5", features = ["derive", "cargo", "env"] }
+comfy-table = "7.1"
 daemonize = "0.5"
 fs2 = "0.4"
 arc-swap = "1.7"

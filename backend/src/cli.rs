@@ -50,6 +50,17 @@ pub enum Commands {
     /// Test configuration file validity
     Test,
 
+    /// Display system statistics and token usage
+    Stats {
+        /// Number of hours to analyze (default: 24)
+        #[arg(short = 'n', long, default_value = "24")]
+        hours: u32,
+
+        /// Show detailed breakdown by provider, API key, and model
+        #[arg(short, long)]
+        detailed: bool,
+    },
+
     /// Show version information
     Version,
 }

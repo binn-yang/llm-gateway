@@ -1,0 +1,300 @@
+use anyhow::Result;
+use chrono::Utc;
+use comfy_table::{presets::UTF8_FULL, Cell, Color, ContentArrangement, Table};
+use llm_gateway::config;
+use sqlx::{FromRow, SqlitePool};
+use tracing::info;
+
+/// Token usage statistics row from database
+#[derive(Debug, FromRow)]
+struct TokenUsageRow {
+    provider: String,
+    instance: String,
+    model: String,
+    requests: i64,
+    total_tokens: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_creation_tokens: i64,
+    cache_read_tokens: i64,
+}
+
+/// Execute the stats command
+///
+/// Displays system statistics and token usage information
+pub async fn execute(hours: u32, detailed: bool) -> Result<()> {
+    println!("LLM Gateway Statistics");
+    println!("======================\n");
+
+    info!("Loading configuration");
+    let cfg = config::load_config()?;
+
+    // Display system summary
+    display_system_summary(&cfg, hours).await?;
+
+    // Display token usage statistics
+    display_token_usage(&cfg, hours, detailed).await?;
+
+    Ok(())
+}
+
+/// Display system summary section
+async fn display_system_summary(cfg: &config::Config, hours: u32) -> Result<()> {
+    println!("System Summary:");
+
+    // Count API keys
+    let total_api_keys = cfg.api_keys.len();
+    let enabled_api_keys = cfg.api_keys.iter().filter(|k| k.enabled).count();
+
+    // Count providers
+    let total_providers = cfg.providers.openai.len()
+        + cfg.providers.anthropic.len()
+        + cfg.providers.gemini.len();
+
+    let enabled_providers = cfg.providers.openai.iter().filter(|p| p.enabled).count()
+        + cfg.providers.anthropic.iter().filter(|p| p.enabled).count()
+        + cfg.providers.gemini.iter().filter(|p| p.enabled).count();
+
+    println!(
+        "  API Keys:          {} configured ({} enabled)",
+        total_api_keys, enabled_api_keys
+    );
+    println!(
+        "  Providers:         {} total ({} enabled)",
+        total_providers, enabled_providers
+    );
+
+    // Try to connect to database for runtime statistics
+    if cfg.observability.enabled {
+        match connect_to_database(&cfg).await {
+            Ok(pool) => {
+                display_database_stats(&pool, hours).await?;
+            }
+            Err(e) => {
+                println!("  Database:          Not available ({})", e);
+            }
+        }
+    } else {
+        println!("  Observability:     Disabled");
+    }
+
+    println!();
+    Ok(())
+}
+
+/// Connect to the observability database
+async fn connect_to_database(cfg: &config::Config) -> Result<SqlitePool> {
+    let db_path = &cfg.observability.database_path;
+    let pool = SqlitePool::connect(&format!("sqlite:{}", db_path)).await?;
+    Ok(pool)
+}
+
+/// Display database-derived statistics
+async fn display_database_stats(pool: &SqlitePool, hours: u32) -> Result<()> {
+    // Calculate cutoff timestamp
+    let cutoff_timestamp = Utc::now().timestamp_millis() - (hours as i64 * 3600 * 1000);
+
+    // Query healthy providers (based on recent successful requests)
+    let healthy_providers = sqlx::query_as::<_, (String, String)>(
+        "SELECT DISTINCT provider, instance
+         FROM requests
+         WHERE timestamp >= ?
+           AND status = 'success'
+         GROUP BY provider, instance
+         HAVING COUNT(*) > 0"
+    )
+    .bind(cutoff_timestamp)
+    .fetch_all(pool)
+    .await?;
+
+    println!("  Healthy Providers: {} (last {} hours)", healthy_providers.len(), hours);
+
+    // Query system uptime (from earliest request)
+    let uptime_result = sqlx::query_as::<_, (Option<i64>,)>(
+        "SELECT MIN(timestamp) as earliest FROM requests"
+    )
+    .fetch_one(pool)
+    .await?;
+
+    if let Some(earliest_timestamp) = uptime_result.0 {
+        if earliest_timestamp > 0 {
+            let uptime_ms = Utc::now().timestamp_millis() - earliest_timestamp;
+            let uptime_str = format_duration(uptime_ms);
+            println!("  System Uptime:     {}", uptime_str);
+        }
+    }
+
+    // Query last hour statistics
+    let last_hour_cutoff = Utc::now().timestamp_millis() - 3600 * 1000;
+
+    let last_hour_api_keys = sqlx::query_as::<_, (i64,)>(
+        "SELECT COUNT(DISTINCT api_key_name) FROM requests WHERE timestamp >= ?"
+    )
+    .bind(last_hour_cutoff)
+    .fetch_one(pool)
+    .await?;
+
+    let last_hour_providers = sqlx::query_as::<_, (i64,)>(
+        "SELECT COUNT(DISTINCT provider) FROM requests WHERE timestamp >= ?"
+    )
+    .bind(last_hour_cutoff)
+    .fetch_one(pool)
+    .await?;
+
+    println!(
+        "  Last Hour:         {} unique API keys, {} active providers",
+        last_hour_api_keys.0, last_hour_providers.0
+    );
+
+    Ok(())
+}
+
+/// Display token usage statistics table
+async fn display_token_usage(cfg: &config::Config, hours: u32, _detailed: bool) -> Result<()> {
+    if !cfg.observability.enabled {
+        println!("Token Usage: Not available (observability disabled)");
+        return Ok(());
+    }
+
+    let pool = match connect_to_database(cfg).await {
+        Ok(pool) => pool,
+        Err(e) => {
+            println!("Token Usage: Not available ({})", e);
+            return Ok(());
+        }
+    };
+
+    // Calculate cutoff timestamp
+    let cutoff_timestamp = Utc::now().timestamp_millis() - (hours as i64 * 3600 * 1000);
+
+    // Query token usage statistics
+    let stats = sqlx::query_as::<_, TokenUsageRow>(
+        "SELECT
+            provider,
+            instance,
+            model,
+            COUNT(*) as requests,
+            COALESCE(SUM(total_tokens), 0) as total_tokens,
+            COALESCE(SUM(input_tokens), 0) as input_tokens,
+            COALESCE(SUM(output_tokens), 0) as output_tokens,
+            COALESCE(SUM(cache_creation_input_tokens), 0) as cache_creation_tokens,
+            COALESCE(SUM(cache_read_input_tokens), 0) as cache_read_tokens
+         FROM requests
+         WHERE timestamp >= ?
+         GROUP BY provider, instance, model
+         ORDER BY total_tokens DESC"
+    )
+    .bind(cutoff_timestamp)
+    .fetch_all(&pool)
+    .await?;
+
+    if stats.is_empty() {
+        println!("Token Usage (Last {} Hours): No data available", hours);
+        return Ok(());
+    }
+
+    // Calculate total tokens for percentage
+    let total_all_tokens: i64 = stats.iter().map(|s| s.total_tokens).sum();
+
+    // Create table
+    println!("Token Usage (Last {} Hours):", hours);
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .set_content_arrangement(ContentArrangement::Dynamic);
+
+    // Add header
+    table.set_header(vec![
+        Cell::new("PROVIDER").fg(Color::Cyan),
+        Cell::new("INSTANCE").fg(Color::Cyan),
+        Cell::new("MODEL").fg(Color::Cyan),
+        Cell::new("REQUESTS").fg(Color::Cyan),
+        Cell::new("TOTAL TOKENS").fg(Color::Cyan),
+        Cell::new("INPUT").fg(Color::Cyan),
+        Cell::new("OUTPUT").fg(Color::Cyan),
+        Cell::new("CACHE CREATE").fg(Color::Cyan),
+        Cell::new("CACHE READ").fg(Color::Cyan),
+        Cell::new("PERCENTAGE").fg(Color::Cyan),
+    ]);
+
+    // Add rows
+    for stat in &stats {
+        let percentage = if total_all_tokens > 0 {
+            (stat.total_tokens as f64 / total_all_tokens as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        table.add_row(vec![
+            Cell::new(&stat.provider),
+            Cell::new(&stat.instance),
+            Cell::new(truncate_model_name(&stat.model)),
+            Cell::new(format_number(stat.requests)),
+            Cell::new(format_number(stat.total_tokens)),
+            Cell::new(format_number(stat.input_tokens)),
+            Cell::new(format_number(stat.output_tokens)),
+            Cell::new(format_number(stat.cache_creation_tokens)),
+            Cell::new(format_number(stat.cache_read_tokens)),
+            Cell::new(format!("{:.1}%", percentage)),
+        ]);
+    }
+
+    println!("{}", table);
+
+    // Print summary
+    let total_requests: i64 = stats.iter().map(|s| s.requests).sum();
+    println!(
+        "\nTotal: {} requests, {} tokens",
+        format_number(total_requests),
+        format_number(total_all_tokens)
+    );
+
+    Ok(())
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/// Format duration in milliseconds to human-readable string
+fn format_duration(ms: i64) -> String {
+    let seconds = ms / 1000;
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+    let days = hours / 24;
+
+    if days > 0 {
+        let remaining_hours = hours % 24;
+        let remaining_minutes = minutes % 60;
+        format!("{}d {}h {}m", days, remaining_hours, remaining_minutes)
+    } else if hours > 0 {
+        let remaining_minutes = minutes % 60;
+        format!("{}h {}m", hours, remaining_minutes)
+    } else if minutes > 0 {
+        let remaining_seconds = seconds % 60;
+        format!("{}m {}s", minutes, remaining_seconds)
+    } else {
+        format!("{}s", seconds)
+    }
+}
+
+/// Format number with commas or K/M suffix
+fn format_number(n: i64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+/// Truncate model name if too long
+fn truncate_model_name(name: &str) -> String {
+    const MAX_LEN: usize = 20;
+    if name.len() > MAX_LEN {
+        format!("{}...", &name[..MAX_LEN - 3])
+    } else {
+        name.to_string()
+    }
+}
