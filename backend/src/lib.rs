@@ -14,7 +14,6 @@ pub mod retry;
 pub mod router;
 pub mod server;
 pub mod signals;
-pub mod static_files;
 pub mod streaming;
 
 use tracing_subscriber::{fmt, prelude::*, EnvFilter, Layer};

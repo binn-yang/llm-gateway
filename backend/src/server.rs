@@ -14,7 +14,6 @@ use crate::{
     observability::RequestLogger,
     router::{ModelRouter, Provider},
     signals::setup_signal_handlers,
-    static_files,
 };
 
 /// Start the LLM Gateway server
@@ -33,7 +32,7 @@ pub async fn start_server(config: Config) -> Result<()> {
     cleanup_old_logs(7);
 
     // Initialize observability (SQLite-based request logger)
-    let (db_pool, request_logger) = if config.observability.enabled {
+    let (_db_pool, request_logger) = if config.observability.enabled {
         tracing::info!(
             database = %config.observability.database_path,
             "Initializing observability database"
@@ -99,7 +98,7 @@ pub async fn start_server(config: Config) -> Result<()> {
     };
 
     // Build the Axum router
-    let app = create_router(config_swap.clone(), app_state, db_pool, load_balancers.clone());
+    let app = create_router(config_swap.clone(), app_state);
 
     // Create socket address
     let addr = SocketAddr::from((
@@ -138,8 +137,6 @@ pub async fn start_server(config: Config) -> Result<()> {
 fn create_router(
     config: Arc<arc_swap::ArcSwap<Config>>,
     app_state: handlers::chat_completions::AppState,
-    db_pool: Option<SqlitePool>,
-    load_balancers: Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<LoadBalancer>>>>,
 ) -> Router {
     // Create authenticated routes
     let auth_routes = Router::new()
@@ -158,25 +155,11 @@ fn create_router(
         ))
         .with_state(app_state);
 
-    // Create dashboard API routes
-    let dashboard_state = handlers::dashboard_api::DashboardState {
-        config: config.clone(),
-        db_pool,
-        load_balancers: load_balancers.clone(),
-    };
-    let dashboard_routes = handlers::dashboard_api::create_dashboard_router(dashboard_state);
-
     // Build app with all routes
     let app = Router::new()
         // Public endpoints (no auth required)
         .route("/health", get(handlers::health::health_check))
         .route("/ready", get(handlers::health::readiness_check))
-        // Dashboard API
-        .nest("/api/dashboard", dashboard_routes)
-        // Dashboard frontend (SPA - must be last as a fallback)
-        .route("/assets/*path", get(static_files::serve_static))
-        .route("/", get(static_files::serve_index))
-        .route("/*path", get(static_files::serve_static))
         // Merge authenticated routes
         .merge(auth_routes);
 
@@ -432,7 +415,7 @@ mod tests {
             request_logger: None,
         };
 
-        let _app = create_router(config_swap, app_state, None, load_balancers);
+        let _app = create_router(config_swap, app_state);
         // Router created successfully - no panic
     }
 }

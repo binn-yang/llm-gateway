@@ -62,10 +62,6 @@ rand = "0.8"
 # SSE
 eventsource-stream = "0.2"
 
-# 静态文件嵌入（用于 Dashboard）
-rust-embed = { version = "8.0", features = ["include-exclude"] }
-mime_guess = "2.0"
-
 # 其他
 chrono = "0.4"
 uuid = { version = "1.11", features = ["v4", "serde"] }
