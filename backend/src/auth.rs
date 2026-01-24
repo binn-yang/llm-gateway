@@ -4,8 +4,6 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use sha2::{Digest, Sha256};
-use sqlx::SqlitePool;
 use std::sync::Arc;
 
 /// Authentication information attached to each authenticated request
@@ -15,23 +13,10 @@ pub struct AuthInfo {
     pub api_key_name: String,
 }
 
-/// State for authentication middleware
-#[derive(Clone)]
-pub struct AuthMiddlewareState {
-    /// Configuration (via ArcSwap for hot reload)
-    pub config: Arc<arc_swap::ArcSwap<Config>>,
-    /// Database pool (optional, for database-first auth)
-    pub db_pool: Option<SqlitePool>,
-}
-
 /// Authentication middleware
 /// Extracts and validates the Bearer token from the Authorization header
-///
-/// Validation priority:
-/// 1. Database (if available) - validate SHA256 hash
-/// 2. TOML config (fallback for backward compatibility)
 pub async fn auth_middleware(
-    State(state): State<Arc<AuthMiddlewareState>>,
+    State(config): State<Arc<arc_swap::ArcSwap<Config>>>,
     mut req: Request,
     next: Next,
 ) -> Result<Response, AppError> {
@@ -45,23 +30,10 @@ pub async fn auth_middleware(
     // Extract Bearer token
     let token = extract_bearer_token(auth_header)?;
 
-    // Compute SHA256 hash of token
-    let token_hash = format!("{:x}", Sha256::digest(token.as_bytes()));
+    // Load current configuration
+    let config = config.load();
 
-    // Try database-first authentication
-    if let Some(pool) = &state.db_pool {
-        if let Some(api_key_name) = validate_token_in_db(pool, &token_hash).await? {
-            // Async update last_used_at (non-blocking)
-            update_last_used_async(pool.clone(), token_hash);
-
-            // Attach authentication info to request
-            req.extensions_mut().insert(AuthInfo { api_key_name });
-            return Ok(next.run(req).await);
-        }
-    }
-
-    // Fallback: TOML config authentication (backward compatibility)
-    let config = state.config.load();
+    // Validate token against configured API keys
     let api_key_config = config
         .api_keys
         .iter()
@@ -74,64 +46,6 @@ pub async fn auth_middleware(
     });
 
     Ok(next.run(req).await)
-}
-
-/// Validate token against database (SHA256 hash comparison)
-///
-/// Returns Some(api_key_name) if valid and enabled, None otherwise
-async fn validate_token_in_db(
-    pool: &SqlitePool,
-    token_hash: &str,
-) -> Result<Option<String>, AppError> {
-    #[derive(sqlx::FromRow)]
-    struct ApiKeyRow {
-        name: String,
-    }
-
-    let result = sqlx::query_as::<_, ApiKeyRow>(
-        r#"
-        SELECT name
-        FROM api_keys
-        WHERE key_hash = ? AND enabled = 1 AND deleted_at IS NULL
-        "#,
-    )
-    .bind(token_hash)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "Database error during authentication");
-        AppError::InternalError("Authentication service unavailable".to_string())
-    })?;
-
-    Ok(result.map(|row| row.name))
-}
-
-/// Update last_used_at timestamp asynchronously (non-blocking)
-///
-/// Spawns a background task to update the database without blocking the request
-fn update_last_used_async(pool: SqlitePool, token_hash: String) {
-    tokio::spawn(async move {
-        let now = chrono::Utc::now().timestamp_millis();
-        let result = sqlx::query(
-            r#"
-            UPDATE api_keys
-            SET last_used_at = ?
-            WHERE key_hash = ? AND deleted_at IS NULL
-            "#,
-        )
-        .bind(now)
-        .bind(&token_hash)
-        .execute(&pool)
-        .await;
-
-        if let Err(e) = result {
-            tracing::warn!(
-                error = %e,
-                token_hash_prefix = &token_hash[..8],
-                "Failed to update last_used_at timestamp"
-            );
-        }
-    });
 }
 
 /// Extract Bearer token from Authorization header

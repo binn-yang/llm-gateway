@@ -353,6 +353,104 @@ All metrics are stored in SQLite for unified observability:
 
 Metrics are recorded in `src/observability/request_logger.rs` with async batch writes (100 events per batch, 100ms flush interval).
 
+#### 9. Configuration Management System (NEW in v0.5.0)
+
+**Files**: `src/config_db.rs`, `src/handlers/config_api.rs`, `backend/migrations/20260122000001_add_config_tables.sql`
+
+Database-driven configuration system with hot reload capability:
+
+**Architecture**:
+- **Database-First**: Configuration stored in SQLite (`./data/config.db`)
+- **Hot Reload**: Changes take effect immediately without server restart
+- **TOML Fallback**: Initial setup from `config.toml`, then database takes over
+- **Web UI**: Vue 3 frontend for CRUD operations on API keys, routing rules, and provider instances
+
+**Database Tables**:
+- **api_keys**: Gateway authentication keys (SHA256 hashed)
+- **routing_rules**: Model prefix to provider mappings
+- **provider_instances**: Backend provider configurations (OpenAI, Anthropic, Gemini)
+
+**Key Components**:
+
+1. **config_db.rs** - Database loading module:
+   - `load_config_from_db()`: Loads complete configuration from SQLite
+   - Validates API keys with SHA256 hash comparison
+   - Loads provider instances with plaintext API keys (required for upstream calls)
+   - Falls back to TOML if database is empty
+
+2. **config_api.rs** - REST API handlers:
+   - API Keys CRUD: `/api/config/api-keys`
+   - Routing Rules CRUD: `/api/config/routing-rules`
+   - Provider Instances CRUD: `/api/config/providers/:provider/instances`
+   - Hot reload endpoint: `/api/config/reload`
+
+**Critical Implementation Details**:
+
+**API Key Storage Strategy**:
+```rust
+// Gateway API Keys (for client authentication)
+// - Stored as SHA256 hash in database
+// - Used for Bearer token validation
+// - Hash comparison in config_db.rs
+
+// Provider API Keys (for upstream calls)
+// - Stored as PLAINTEXT in database (field name: api_key_encrypted)
+// - Required for calling OpenAI/Anthropic/Gemini APIs
+// - Cannot be hashed because upstream providers need the actual key
+```
+
+**Why Plaintext for Provider Keys?**:
+- Gateway must send actual API key to upstream providers
+- Hashing is irreversible - cannot recover original key
+- Field named `api_key_encrypted` for future encryption implementation
+- Current implementation: plaintext storage (security trade-off for functionality)
+
+**Hot Reload Mechanism**:
+```rust
+// In config_api.rs handlers
+async fn create_provider_instance(...) {
+    // 1. Insert into database
+    sqlx::query("INSERT INTO provider_instances ...").execute(&pool).await?;
+
+    // 2. Reload config from database
+    let new_config = config_db::load_config_from_db(&pool).await?;
+
+    // 3. Rebuild load balancers with new config
+    let new_load_balancers = build_load_balancers(&new_config);
+
+    // 4. Atomic swap (Arc::new + store)
+    app_state.load_balancers.store(Arc::new(new_load_balancers));
+
+    // 5. No server restart required!
+}
+```
+
+**Configuration Flow**:
+```
+First Run:
+  config.toml → SQLite database → Runtime config
+
+Subsequent Runs:
+  SQLite database → Runtime config (TOML ignored)
+
+Web UI Changes:
+  UI → REST API → Database → Hot reload → Runtime config
+```
+
+**Frontend Components** (`frontend/src/components/config/`):
+- `ApiKeysList.vue`: Manage gateway API keys
+- `RoutingRulesList.vue`: Configure model routing
+- `ProviderInstancesList.vue`: Manage provider backends
+- `CreateApiKeyModal.vue`: Create new API key with validation
+- `CreateRoutingRuleModal.vue`: Create routing rule
+- `CreateProviderInstanceModal.vue`: Create provider instance (with Anthropic-specific fields)
+
+**Important Notes**:
+- Database file: `./data/config.db` (back up regularly)
+- Migrations run automatically on startup
+- Provider instances support Anthropic-specific `extra_config` (api_version, cache settings)
+- All changes logged with structured tracing
+
 ### Handlers
 
 **Directory**: `src/handlers/`
@@ -368,6 +466,14 @@ The gateway provides two API formats through different handlers:
 
 **Infrastructure**:
 - `health.rs` - `/health`, `/ready` endpoints
+
+**Configuration Management** (NEW in v0.5.0):
+- `config_api.rs` - REST API for managing configuration
+  - API Keys CRUD: Create, list, update (enable/disable), delete
+  - Routing Rules CRUD: Create, list, update, delete
+  - Provider Instances CRUD: Create, list, update, delete
+  - Hot reload: `/api/config/reload` triggers configuration reload from database
+  - All operations update SQLite database and trigger hot reload
 
 **Important Pattern**: All handlers use `execute_with_session()` from `retry.rs` to integrate with load balancing and metrics.
 
@@ -393,6 +499,7 @@ The gateway provides two API formats through different handlers:
 - **API Key Analytics**: Per-key token usage and cost estimation
 - **Trace Timeline**: Visualize request traces (spans) with performance breakdown
 - **Cost Calculator**: Estimate costs based on token usage and caching
+- **Configuration Management** (NEW in v0.5.0): Web UI for managing gateway configuration
 
 **Key Components** (`frontend/src/components/`):
 - `dashboard/TokenUsageTimeseries.vue`: Time-series token usage chart
@@ -401,6 +508,12 @@ The gateway provides two API formats through different handlers:
 - `dashboard/InstanceHealthTimeseries.vue`: Health status over time
 - `dashboard/ProviderHealthChart.vue`: Current provider health matrix
 - `trace/TraceTimeline.vue`: Request trace visualization
+- **`config/ApiKeysList.vue`**: Manage gateway API keys (NEW)
+- **`config/RoutingRulesList.vue`**: Configure routing rules (NEW)
+- **`config/ProviderInstancesList.vue`**: Manage provider instances (NEW)
+- **`config/CreateApiKeyModal.vue`**: Create new API key modal (NEW)
+- **`config/CreateRoutingRuleModal.vue`**: Create routing rule modal (NEW)
+- **`config/CreateProviderInstanceModal.vue`**: Create provider instance modal (NEW)
 
 **API Endpoints**:
 - `GET /api/requests/time-series`: Token usage time series
@@ -408,6 +521,19 @@ The gateway provides two API formats through different handlers:
 - `GET /api/requests/by-instance`: Per-instance aggregation
 - `GET /api/instances/health-time-series`: Instance health over time
 - `GET /api/instances/current-health`: Current health status
+- **`GET /api/config/api-keys`**: List all API keys (NEW)
+- **`POST /api/config/api-keys`**: Create new API key (NEW)
+- **`PUT /api/config/api-keys/:name`**: Update API key (NEW)
+- **`DELETE /api/config/api-keys/:name`**: Delete API key (NEW)
+- **`GET /api/config/routing-rules`**: List routing rules (NEW)
+- **`POST /api/config/routing-rules`**: Create routing rule (NEW)
+- **`PUT /api/config/routing-rules/:id`**: Update routing rule (NEW)
+- **`DELETE /api/config/routing-rules/:id`**: Delete routing rule (NEW)
+- **`GET /api/config/providers/:provider/instances`**: List provider instances (NEW)
+- **`POST /api/config/providers/:provider/instances`**: Create provider instance (NEW)
+- **`PUT /api/config/providers/:provider/instances/:name`**: Update provider instance (NEW)
+- **`DELETE /api/config/providers/:provider/instances/:name`**: Delete provider instance (NEW)
+- **`POST /api/config/reload`**: Hot reload configuration (NEW)
 
 **Development**:
 ```bash

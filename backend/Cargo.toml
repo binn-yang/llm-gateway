@@ -68,7 +68,6 @@ mime_guess = "2.0"
 # 其他
 chrono = "0.4"
 uuid = { version = "1.11", features = ["v4", "serde"] }
-sha2 = "0.10"  # SHA256 hashing for API keys
 
 [dev-dependencies]
 httpmock = "0.8"

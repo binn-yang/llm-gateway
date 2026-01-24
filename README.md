@@ -26,7 +26,12 @@ A high-performance LLM proxy gateway written in Rust that provides multiple API 
   - Provider instance health monitoring
   - Per-API-key cost estimation
   - Request trace visualization
-- **Static Authentication**: API key-based auth configured in TOML
+  - **Configuration Management UI** - CRUD operations for API keys, routing rules, and provider instances
+- **Flexible Configuration**:
+  - Database-driven configuration with hot reload (no server restart required)
+  - Web UI for managing API keys, routing rules, and provider instances
+  - TOML file support for backward compatibility and initial setup
+  - Dual authentication: Gateway API keys (SHA256 hashed) + Provider API keys (encrypted storage)
 - **SQLite-based Metrics**: Unified observability with per-request granularity and automatic retention
 - **Streaming Support**: Full SSE support with real-time protocol conversion
 - **Cloud Native**: Docker ready, health checks, structured JSON logging
@@ -382,6 +387,62 @@ The dashboard provides:
 | `/api/requests/by-instance` | GET | No | Per-instance token distribution |
 | `/api/instances/health-time-series` | GET | No | Instance health over time |
 | `/api/instances/current-health` | GET | No | Current instance health status |
+
+### Configuration Management APIs (NEW)
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/api/config/api-keys` | GET | No | List all API keys |
+| `/api/config/api-keys` | POST | No | Create new API key |
+| `/api/config/api-keys/:name` | PUT | No | Update API key (enable/disable) |
+| `/api/config/api-keys/:name` | DELETE | No | Delete API key |
+| `/api/config/routing-rules` | GET | No | List all routing rules |
+| `/api/config/routing-rules` | POST | No | Create new routing rule |
+| `/api/config/routing-rules/:id` | PUT | No | Update routing rule |
+| `/api/config/routing-rules/:id` | DELETE | No | Delete routing rule |
+| `/api/config/providers/:provider/instances` | GET | No | List provider instances |
+| `/api/config/providers/:provider/instances` | POST | No | Create provider instance |
+| `/api/config/providers/:provider/instances/:name` | PUT | No | Update provider instance |
+| `/api/config/providers/:provider/instances/:name` | DELETE | No | Delete provider instance |
+| `/api/config/reload` | POST | No | Reload configuration from database |
+
+## Configuration Management
+
+### Web-Based Configuration UI
+
+Access the configuration management interface at `http://localhost:8080/config` to manage your gateway settings through a user-friendly web interface.
+
+**Features**:
+- **API Keys Management**: Create, enable/disable, and delete gateway API keys
+- **Routing Rules**: Configure model prefix-to-provider routing (e.g., "gpt-" → openai)
+- **Provider Instances**: Manage multiple backend instances per provider with priority settings
+- **Hot Reload**: Changes take effect immediately without server restart
+- **Anthropic-Specific Settings**: Configure prompt caching and API version per instance
+
+**Configuration Flow**:
+```
+1. Initial Setup (TOML file)
+   ↓
+2. Server loads config into SQLite database
+   ↓
+3. Use Web UI to manage configuration
+   ↓
+4. Changes saved to database + hot reload
+   ↓
+5. No server restart required!
+```
+
+**Important Notes**:
+- **First Run**: Server loads configuration from `config.toml` into SQLite database
+- **Subsequent Runs**: Configuration loaded from database (TOML file ignored unless database is empty)
+- **API Key Storage**:
+  - Gateway API keys: SHA256 hashed for authentication
+  - Provider API keys: Stored as plaintext (required for upstream API calls)
+- **Backup**: Database file is at `./data/config.db` - back it up regularly
+
+### TOML Configuration (Legacy/Initial Setup)
+
+For initial setup or automated deployments, you can still use `config.toml`:
 
 ## Usage Examples
 
