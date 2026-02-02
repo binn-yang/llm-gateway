@@ -142,6 +142,43 @@ async fn reload_config(
         );
     }
 
+    // Phase 3.5: Migrate sessions from old load balancers to new ones
+    info!("Migrating sticky sessions from old load balancers...");
+    let old_load_balancers = load_balancers.load();
+    let mut total_migrated = 0;
+    let mut total_dropped = 0;
+
+    for (provider, new_lb) in new_load_balancers.iter() {
+        if let Some(old_lb) = old_load_balancers.get(provider) {
+            let stats = new_lb.migrate_sessions_from(old_lb).await;
+
+            total_migrated += stats.migrated;
+            total_dropped += stats.total_dropped();
+
+            info!(
+                provider = %provider,
+                total = stats.total_sessions,
+                migrated = stats.migrated,
+                dropped_expired = stats.dropped_expired,
+                dropped_not_found = stats.dropped_instance_not_found,
+                dropped_disabled = stats.dropped_instance_disabled,
+                dropped_unhealthy = stats.dropped_instance_unhealthy,
+                "Session migration completed for provider"
+            );
+        } else {
+            info!(
+                provider = %provider,
+                "No old load balancer found, skipping session migration"
+            );
+        }
+    }
+
+    info!(
+        total_migrated = total_migrated,
+        total_dropped = total_dropped,
+        "Session migration completed for all providers"
+    );
+
     // Phase 4: Atomic swap - both config and load balancers are updated together
     config.store(Arc::new(new_config));
     load_balancers.store(Arc::new(new_load_balancers));

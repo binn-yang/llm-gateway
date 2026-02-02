@@ -302,7 +302,7 @@ impl LoadBalancer {
     /// Get the count of healthy and enabled instances
 
     /// Get instance by name
-    fn get_instance_by_name(&self, name: &str) -> Option<ProviderInstance> {
+    pub fn get_instance_by_name(&self, name: &str) -> Option<ProviderInstance> {
         self.instances.iter()
             .find(|i| i.name.as_ref() == name)
             .cloned()
@@ -504,6 +504,102 @@ impl LoadBalancer {
             })
             .collect()
     }
+
+    /// Migrate sessions from an old LoadBalancer to this new LoadBalancer
+    ///
+    /// This is called during config reload to preserve sticky sessions.
+    /// Only migrates sessions that:
+    /// - Have not expired (< 1 hour since last request)
+    /// - Point to instances that still exist in the new config
+    /// - Point to instances that are enabled
+    /// - Point to instances that are healthy
+    ///
+    /// Returns statistics about the migration process.
+    pub async fn migrate_sessions_from(&self, old_lb: &LoadBalancer) -> MigrationStats {
+        const SESSION_TIMEOUT: Duration = Duration::from_secs(3600); // 1 hour
+        let now = Instant::now();
+
+        let mut stats = MigrationStats::default();
+
+        // Get health state once to avoid repeated locks
+        let health = self.health_state.read().await;
+
+        // Iterate through all sessions in old load balancer
+        for entry in old_lb.sessions.iter() {
+            let api_key = entry.key();
+            let session_info = entry.value();
+
+            stats.total_sessions += 1;
+
+            // Check 1: Session not expired
+            if now.duration_since(session_info.last_request_time) >= SESSION_TIMEOUT {
+                stats.dropped_expired += 1;
+                tracing::debug!(
+                    api_key = %crate::logging::sanitize_log_value(api_key),
+                    instance = %session_info.instance_name,
+                    "Dropping expired session during migration"
+                );
+                continue;
+            }
+
+            // Check 2: Instance exists in new config
+            let instance = match self.get_instance_by_name(&session_info.instance_name) {
+                Some(inst) => inst,
+                None => {
+                    stats.dropped_instance_not_found += 1;
+                    tracing::debug!(
+                        api_key = %crate::logging::sanitize_log_value(api_key),
+                        instance = %session_info.instance_name,
+                        "Dropping session: instance not found in new config"
+                    );
+                    continue;
+                }
+            };
+
+            // Check 3: Instance is enabled
+            if !instance.config.enabled() {
+                stats.dropped_instance_disabled += 1;
+                tracing::debug!(
+                    api_key = %crate::logging::sanitize_log_value(api_key),
+                    instance = %session_info.instance_name,
+                    "Dropping session: instance is disabled"
+                );
+                continue;
+            }
+
+            // Check 4: Instance is healthy
+            let is_healthy = health.instances.get(session_info.instance_name.as_str())
+                .map_or(false, |h| h.is_healthy);
+
+            if !is_healthy {
+                stats.dropped_instance_unhealthy += 1;
+                tracing::debug!(
+                    api_key = %crate::logging::sanitize_log_value(api_key),
+                    instance = %session_info.instance_name,
+                    "Dropping session: instance is unhealthy"
+                );
+                continue;
+            }
+
+            // All checks passed - migrate the session
+            self.sessions.insert(
+                api_key.clone(),
+                SessionInfo {
+                    instance_name: session_info.instance_name.clone(),
+                    last_request_time: session_info.last_request_time,
+                },
+            );
+
+            stats.migrated += 1;
+            tracing::debug!(
+                api_key = %crate::logging::sanitize_log_value(api_key),
+                instance = %session_info.instance_name,
+                "Migrated session successfully"
+            );
+        }
+
+        stats
+    }
 }
 
 /// Instance health information for API responses
@@ -513,6 +609,33 @@ pub struct InstanceHealthInfo {
     pub instance: String,
     pub is_healthy: bool,
     pub duration_secs: u64,
+}
+
+/// Statistics from session migration during config reload
+#[derive(Debug, Clone, Default)]
+pub struct MigrationStats {
+    /// Total sessions in old load balancer
+    pub total_sessions: usize,
+    /// Sessions successfully migrated
+    pub migrated: usize,
+    /// Sessions dropped because instance doesn't exist
+    pub dropped_instance_not_found: usize,
+    /// Sessions dropped because instance is disabled
+    pub dropped_instance_disabled: usize,
+    /// Sessions dropped because instance is unhealthy
+    pub dropped_instance_unhealthy: usize,
+    /// Sessions dropped because they expired (>1 hour)
+    pub dropped_expired: usize,
+}
+
+impl MigrationStats {
+    /// Total sessions that were dropped (not migrated)
+    pub fn total_dropped(&self) -> usize {
+        self.dropped_instance_not_found
+            + self.dropped_instance_disabled
+            + self.dropped_instance_unhealthy
+            + self.dropped_expired
+    }
 }
 
 #[cfg(test)]
@@ -525,6 +648,22 @@ mod tests {
             config: ProviderInstanceConfigEnum::Generic(Arc::new(ProviderInstanceConfig {
                 name: name.to_string(),
                 enabled: true,
+                api_key: "test-key".to_string(),
+                base_url: "http://localhost".to_string(),
+                timeout_seconds: 60,
+                priority,
+                failure_timeout_seconds: 60,
+                weight: 100,
+            })),
+        }
+    }
+
+    fn create_test_instance_disabled(name: &str, priority: u32) -> ProviderInstance {
+        ProviderInstance {
+            name: Arc::from(name),
+            config: ProviderInstanceConfigEnum::Generic(Arc::new(ProviderInstanceConfig {
+                name: name.to_string(),
+                enabled: false,
                 api_key: "test-key".to_string(),
                 base_url: "http://localhost".to_string(),
                 timeout_seconds: 60,
@@ -589,5 +728,210 @@ mod tests {
         // Next request should failover to backup
         let second = lb.select_instance_for_key("test-key").await;
         assert_eq!(second.unwrap().name.as_ref(), "backup");
+    }
+
+    #[tokio::test]
+    async fn test_migrate_sessions_basic() {
+        // Create old LoadBalancer with 2 instances and 2 sessions
+        let old_instances = vec![
+            create_test_instance("instance-a", 1),
+            create_test_instance("instance-b", 1),
+        ];
+        let old_lb = LoadBalancer::new("test".to_string(), old_instances);
+
+        // Create sessions in old LoadBalancer
+        old_lb.select_instance_for_key("api-key-1").await;
+        old_lb.select_instance_for_key("api-key-2").await;
+
+        // Create new LoadBalancer with same instances
+        let new_instances = vec![
+            create_test_instance("instance-a", 1),
+            create_test_instance("instance-b", 1),
+        ];
+        let new_lb = LoadBalancer::new("test".to_string(), new_instances);
+
+        // Migrate sessions
+        let stats = new_lb.migrate_sessions_from(&old_lb).await;
+
+        // Verify: both sessions migrated successfully
+        assert_eq!(stats.total_sessions, 2);
+        assert_eq!(stats.migrated, 2);
+        assert_eq!(stats.total_dropped(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_migrate_sessions_instance_not_found() {
+        // Create old LoadBalancer with session bound to "instance-a"
+        let old_instances = vec![create_test_instance("instance-a", 1)];
+        let old_lb = LoadBalancer::new("test".to_string(), old_instances);
+        old_lb.select_instance_for_key("api-key-1").await;
+
+        // Create new LoadBalancer with only "instance-b" (no instance-a)
+        let new_instances = vec![create_test_instance("instance-b", 1)];
+        let new_lb = LoadBalancer::new("test".to_string(), new_instances);
+
+        // Migrate sessions
+        let stats = new_lb.migrate_sessions_from(&old_lb).await;
+
+        // Verify: session dropped because instance not found
+        assert_eq!(stats.total_sessions, 1);
+        assert_eq!(stats.migrated, 0);
+        assert_eq!(stats.dropped_instance_not_found, 1);
+        assert_eq!(stats.total_dropped(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_migrate_sessions_instance_disabled() {
+        // Create old LoadBalancer with enabled instance
+        let old_instances = vec![create_test_instance("instance-a", 1)];
+        let old_lb = LoadBalancer::new("test".to_string(), old_instances);
+        old_lb.select_instance_for_key("api-key-1").await;
+
+        // Create new LoadBalancer with same instance but disabled
+        let new_instances = vec![create_test_instance_disabled("instance-a", 1)];
+        let new_lb = LoadBalancer::new("test".to_string(), new_instances);
+
+        // Migrate sessions
+        let stats = new_lb.migrate_sessions_from(&old_lb).await;
+
+        // Verify: session dropped because instance is disabled
+        assert_eq!(stats.total_sessions, 1);
+        assert_eq!(stats.migrated, 0);
+        assert_eq!(stats.dropped_instance_disabled, 1);
+    }
+
+    #[tokio::test]
+    async fn test_migrate_sessions_instance_unhealthy() {
+        // Create old LoadBalancer with healthy instance
+        let old_instances = vec![create_test_instance("instance-a", 1)];
+        let old_lb = LoadBalancer::new("test".to_string(), old_instances);
+        old_lb.select_instance_for_key("api-key-1").await;
+
+        // Create new LoadBalancer with same instance
+        let new_instances = vec![create_test_instance("instance-a", 1)];
+        let new_lb = LoadBalancer::new("test".to_string(), new_instances);
+
+        // Mark instance as unhealthy in new LoadBalancer
+        new_lb.mark_instance_failure("instance-a").await;
+
+        // Migrate sessions
+        let stats = new_lb.migrate_sessions_from(&old_lb).await;
+
+        // Verify: session dropped because instance is unhealthy
+        assert_eq!(stats.total_sessions, 1);
+        assert_eq!(stats.migrated, 0);
+        assert_eq!(stats.dropped_instance_unhealthy, 1);
+    }
+
+    #[tokio::test]
+    async fn test_migrate_sessions_expired() {
+        use std::time::Duration;
+
+        // Create old LoadBalancer
+        let old_instances = vec![create_test_instance("instance-a", 1)];
+        let old_lb = LoadBalancer::new("test".to_string(), old_instances);
+
+        // Create session and manually set it to 2 hours ago (expired)
+        let api_key = "api-key-1";
+        let expired_time = Instant::now() - Duration::from_secs(7200); // 2 hours ago
+        old_lb.sessions.insert(
+            api_key.to_string(),
+            SessionInfo {
+                instance_name: "instance-a".to_string(),
+                last_request_time: expired_time,
+            },
+        );
+
+        // Create new LoadBalancer with same instance
+        let new_instances = vec![create_test_instance("instance-a", 1)];
+        let new_lb = LoadBalancer::new("test".to_string(), new_instances);
+
+        // Migrate sessions
+        let stats = new_lb.migrate_sessions_from(&old_lb).await;
+
+        // Verify: session dropped because it expired (>1 hour)
+        assert_eq!(stats.total_sessions, 1);
+        assert_eq!(stats.migrated, 0);
+        assert_eq!(stats.dropped_expired, 1);
+    }
+
+    #[tokio::test]
+    async fn test_migrate_sessions_mixed_scenarios() {
+        use std::time::Duration;
+
+        // Create old LoadBalancer with 3 instances
+        let old_instances = vec![
+            create_test_instance("instance-a", 1),
+            create_test_instance("instance-b", 1),
+            create_test_instance("instance-c", 1),
+        ];
+        let old_lb = LoadBalancer::new("test".to_string(), old_instances);
+
+        // Create 5 sessions with different scenarios:
+        // 1. Valid session to instance-a (should migrate)
+        old_lb.sessions.insert(
+            "valid-key-1".to_string(),
+            SessionInfo {
+                instance_name: "instance-a".to_string(),
+                last_request_time: Instant::now(),
+            },
+        );
+
+        // 2. Valid session to instance-a (should migrate)
+        old_lb.sessions.insert(
+            "valid-key-2".to_string(),
+            SessionInfo {
+                instance_name: "instance-a".to_string(),
+                last_request_time: Instant::now(),
+            },
+        );
+
+        // 3. Session to instance-c which won't exist in new config
+        old_lb.sessions.insert(
+            "not-found-key".to_string(),
+            SessionInfo {
+                instance_name: "instance-c".to_string(),
+                last_request_time: Instant::now(),
+            },
+        );
+
+        // 4. Session to instance-b which will be disabled in new config
+        old_lb.sessions.insert(
+            "disabled-key".to_string(),
+            SessionInfo {
+                instance_name: "instance-b".to_string(),
+                last_request_time: Instant::now(),
+            },
+        );
+
+        // 5. Expired session to instance-a
+        old_lb.sessions.insert(
+            "expired-key".to_string(),
+            SessionInfo {
+                instance_name: "instance-a".to_string(),
+                last_request_time: Instant::now() - Duration::from_secs(7200),
+            },
+        );
+
+        // Create new LoadBalancer:
+        // - instance-a: enabled and healthy
+        // - instance-b: disabled
+        // - instance-c: not present
+        let new_instances = vec![
+            create_test_instance("instance-a", 1),
+            create_test_instance_disabled("instance-b", 1),
+        ];
+        let new_lb = LoadBalancer::new("test".to_string(), new_instances);
+
+        // Migrate sessions
+        let stats = new_lb.migrate_sessions_from(&old_lb).await;
+
+        // Verify statistics
+        assert_eq!(stats.total_sessions, 5);
+        assert_eq!(stats.migrated, 2); // valid-key-1 and valid-key-2
+        assert_eq!(stats.dropped_expired, 1); // expired-key
+        assert_eq!(stats.dropped_instance_not_found, 1); // not-found-key
+        assert_eq!(stats.dropped_instance_disabled, 1); // disabled-key
+        assert_eq!(stats.total_dropped(), 3);
     }
 }
