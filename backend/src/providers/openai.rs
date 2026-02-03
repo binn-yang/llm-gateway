@@ -11,14 +11,27 @@ pub async fn chat_completions(
     client: &Client,
     config: &ProviderInstanceConfig,
     request: ChatCompletionRequest,
+    oauth_token: Option<&str>,
 ) -> Result<reqwest::Response, AppError> {
     let url = format!("{}/chat/completions", config.base_url);
 
-    let response = client
+    let mut req = client
         .post(&url)
-        .header("Authorization", format!("Bearer {}", config.api_key))
         .header("Content-Type", "application/json")
-        .timeout(Duration::from_secs(config.timeout_seconds))
+        .timeout(Duration::from_secs(config.timeout_seconds));
+
+    // Add authentication header
+    if let Some(token) = oauth_token {
+        req = req.header("Authorization", format!("Bearer {}", token));
+    } else if let Some(api_key) = &config.api_key {
+        req = req.header("Authorization", format!("Bearer {}", api_key));
+    } else {
+        return Err(AppError::ConfigError(
+            "No authentication credentials provided".to_string()
+        ));
+    }
+
+    let response = req
         .json(&request)
         .send()
         .await?;
@@ -45,12 +58,14 @@ mod tests {
         ProviderInstanceConfig {
             name: "test-instance".to_string(),
             enabled: true,
-            api_key: "sk-test-key".to_string(),
+            api_key: Some("sk-test-key".to_string()),
             base_url: "https://api.openai.com/v1".to_string(),
             timeout_seconds: 30,
             priority: 1,
             failure_timeout_seconds: 60,
             weight: 100,
+            auth_mode: crate::config::AuthMode::Bearer,
+            oauth_provider: None,
         }
     }
 

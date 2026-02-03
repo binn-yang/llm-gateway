@@ -1,0 +1,180 @@
+[server]
+host = "0.0.0.0"
+port = 8080
+log_level = "info"
+log_format = "json"
+
+# ============================================================================
+# API Keys Authentication
+# ============================================================================
+# Generate secure random keys for production use
+[[api_keys]]
+key = "sk-gateway-YOUR-KEY-HERE-001"
+name = "client-1"
+enabled = true
+
+[[api_keys]]
+key = "sk-gateway-YOUR-KEY-HERE-002"
+name = "client-2"
+enabled = true
+
+# ============================================================================
+# Routing Configuration
+# ============================================================================
+# Model names are routed to providers based on prefix matching
+[routing]
+# Prefix matching rules (longest prefix is matched first)
+[routing.rules]
+"gpt-" = "openai"
+"o1-" = "openai"
+"o3-" = "openai"
+"text-embedding-" = "openai"
+"claude-" = "anthropic"
+"gemini-" = "gemini"
+
+# Default provider when no prefix matches (optional)
+default_provider = "openai"
+
+# Model discovery and caching configuration
+[routing.discovery]
+enabled = true
+cache_ttl_seconds = 3600      # 1 hour cache for model lists
+refresh_on_startup = true
+providers_with_listing = ["openai"]  # Providers that support model listing API
+
+# ============================================================================
+# Provider Configurations (Multi-Instance Support)
+# ============================================================================
+# Each provider can have multiple instances for load balancing and failover
+# Instances are selected based on priority (lower number = higher priority)
+# Within the same priority level, instances are randomly selected
+#
+# Authentication Modes:
+#   - Bearer mode (default): Use api_key for authentication
+#   - OAuth mode: Use OAuth token for authentication (requires oauth_provider)
+
+# OpenAI-compatible instances
+[[providers.openai]]
+name = "openai-primary"
+enabled = true
+auth_mode = "bearer"          # Authentication mode: "bearer" or "oauth"
+api_key = "sk-YOUR-OPENAI-KEY-HERE"
+base_url = "https://api.openai.com/v1"
+timeout_seconds = 300
+priority = 1                  # Primary instance
+failure_timeout_seconds = 60  # Auto-recover after 60 seconds of last failure
+
+# Example: OpenAI instance with OAuth authentication
+# [[providers.openai]]
+# name = "openai-oauth"
+# enabled = true
+# auth_mode = "oauth"          # Use OAuth authentication
+# oauth_provider = "openai"    # Reference to oauth_providers configuration
+# base_url = "https://api.openai.com/v1"
+# timeout_seconds = 300
+# priority = 2                 # Backup instance
+# failure_timeout_seconds = 60
+
+# Anthropic instances
+[[providers.anthropic]]
+name = "anthropic-primary"
+enabled = true
+auth_mode = "bearer"          # Authentication mode: "bearer" or "oauth"
+api_key = "sk-ant-YOUR-KEY-HERE"
+base_url = "https://api.anthropic.com/v1"
+timeout_seconds = 300
+api_version = "2023-06-01"
+priority = 1                  # Primary instance
+failure_timeout_seconds = 60
+
+# Automatic prompt caching configuration (Anthropic only)
+[providers.anthropic.cache]
+auto_cache_system = true      # Automatically cache system messages
+min_system_tokens = 1024      # Minimum tokens to enable caching
+auto_cache_tools = true       # Automatically cache tool definitions
+
+# Example: Anthropic instance with OAuth authentication
+# [[providers.anthropic]]
+# name = "anthropic-oauth"
+# enabled = true
+# auth_mode = "oauth"          # Use OAuth authentication
+# oauth_provider = "anthropic" # Reference to oauth_providers configuration
+# base_url = "https://api.anthropic.com/v1"
+# timeout_seconds = 300
+# api_version = "2023-06-01"
+# priority = 2                 # Backup instance
+# failure_timeout_seconds = 60
+
+# Gemini instances
+# [[providers.gemini]]
+# name = "gemini-primary"
+# enabled = true
+# auth_mode = "bearer"
+# api_key = "YOUR-GEMINI-KEY-HERE"
+# base_url = "https://generativelanguage.googleapis.com/v1beta"
+# timeout_seconds = 300
+# priority = 1
+# failure_timeout_seconds = 60
+
+# ============================================================================
+# OAuth Providers Configuration (NEW)
+# ============================================================================
+# Configure OAuth providers for provider authentication
+# After configuring, run: llm-gateway oauth login <provider_name>
+
+# Example: Anthropic OAuth configuration
+# [[oauth_providers]]
+# name = "anthropic"                    # Provider name referenced by provider instances
+# # 官方 Anthropic OAuth client ID（公开，可安全使用）
+# client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+# # 授权端点（注意：使用 claude.ai 域名，不是 console.anthropic.com）
+# auth_url = "https://claude.ai/oauth/authorize"
+# # Token 端点（注意：路径包含 /v1）
+# token_url = "https://console.anthropic.com/v1/oauth/token"
+# # 回调地址（远程回调，需要用户手动复制 URL）
+# # 注意：此 client_id 使用官方 redirect_uri，用户需要手动复制授权后的 URL
+# redirect_uri = "https://platform.claude.com/oauth/code/callback"
+# # 完整权限列表
+# scopes = [
+#   "org:create_api_key",        # 创建 API 密钥
+#   "user:profile",              # 访问用户资料
+#   "user:inference",            # 发起 API 请求
+#   "user:sessions:claude_code"  # Claude Code 集成
+# ]
+# # 可选：自定义请求头（用于 token 交换，通常不需要）
+# # [oauth_providers.custom_headers]
+# # "User-Agent" = "llm-gateway/0.5.0"
+
+# Example: OpenAI OAuth configuration (hypothetical)
+# [[oauth_providers]]
+# name = "openai"
+# client_id = "your-client-id"
+# auth_url = "https://auth.openai.com/authorize"
+# token_url = "https://auth.openai.com/token"
+# redirect_uri = "http://localhost:54545/callback"
+# scopes = ["api"]
+
+# ============================================================================
+# Observability Configuration
+# ============================================================================
+[observability]
+enabled = true  # Enable SQLite-based observability
+database_path = "./data/observability.db"
+
+# Performance tuning
+[observability.performance]
+batch_size = 100              # Number of log entries per batch
+flush_interval_ms = 100       # Max time before flushing batch (milliseconds)
+max_buffer_size = 10000       # Ring buffer size to prevent blocking
+
+# Data retention policies (automatic cleanup)
+[observability.retention]
+logs_days = 7                     # Keep logs for 7 days
+spans_days = 7                    # Keep trace spans for 7 days
+metrics_snapshots_days = 30       # Keep metrics snapshots for 30 days
+cleanup_hour = 3                  # Run cleanup at 3 AM daily (0-23)
+
+# Metrics snapshots (for historical analysis)
+[observability.metrics_snapshot]
+enabled = true                    # Snapshot metrics to SQLite
+interval_seconds = 300            # Snapshot every 5 minutes

@@ -27,6 +27,8 @@ pub enum AppError {
     NoHealthyInstances(String),
     /// HTTP request error (preserves reqwest::Error for health detection)
     HttpRequest(reqwest::Error),
+    /// OAuth error
+    OAuthError { message: String },
 }
 
 impl fmt::Display for AppError {
@@ -43,6 +45,7 @@ impl fmt::Display for AppError {
             Self::InternalError(msg) => write!(f, "Internal error: {}", msg),
             Self::NoHealthyInstances(msg) => write!(f, "No healthy instances: {}", msg),
             Self::HttpRequest(err) => write!(f, "HTTP request error: {}", err),
+            Self::OAuthError { message } => write!(f, "OAuth error: {}", message),
         }
     }
 }
@@ -61,6 +64,7 @@ impl IntoResponse for AppError {
             Self::InternalError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             Self::NoHealthyInstances(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
             Self::HttpRequest(err) => (StatusCode::BAD_GATEWAY, err.to_string()),
+            Self::OAuthError { message } => (StatusCode::UNAUTHORIZED, message.clone()),
         };
 
         let body = Json(json!({
@@ -85,6 +89,7 @@ fn error_type_name(error: &AppError) -> &'static str {
         AppError::InternalError(_) => "internal_error",
         AppError::NoHealthyInstances(_) => "no_healthy_instances",
         AppError::HttpRequest(_) => "http_request_error",
+        AppError::OAuthError { .. } => "oauth_error",
     }
 }
 

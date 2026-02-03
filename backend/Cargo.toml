@@ -54,6 +54,7 @@ anyhow = "1.0"
 # 异步流处理
 futures = "0.3"
 futures-util = "0.3"
+async-trait = "0.1"
 
 # 并发数据结构和随机
 dashmap = "6.0"
@@ -65,12 +66,27 @@ eventsource-stream = "0.2"
 # 其他
 chrono = "0.4"
 uuid = { version = "1.11", features = ["v4", "serde"] }
+url = "2.5"
+
+# OAuth 和加密
+oauth2 = "4.4"
+sha2 = "0.10"
+aes-gcm = "0.10"
+argon2 = "0.5"
+
+# CLI 增强
+indicatif = "0.17"
+colored = "2.1"
+webbrowser = "0.8"
+hostname = "0.3"
+dirs = "5.0"
 
 [dev-dependencies]
 httpmock = "0.8"
 wiremock = "0.6"
 criterion = { version = "0.5", features = ["html_reports"] }
 tokio-test = "0.4"
+tempfile = "3.8"
 
 [[bench]]
 name = "load_balancer_bench"

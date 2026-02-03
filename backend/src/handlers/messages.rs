@@ -120,12 +120,14 @@ pub async fn handle_messages(
 
     // 3. Execute request with sticky session (returns SessionResult)
     let http_client = state.http_client.clone();
+    let oauth_manager = state.oauth_manager.clone();
     let session_result = crate::retry::execute_with_session(
         load_balancer.as_ref(),
         &auth.api_key_name,
         |instance| {
             let http_client = http_client.clone();
             let anthropic_request = anthropic_request.clone();
+            let oauth_manager = oauth_manager.clone();
             async move {
                 // Extract config from the instance
                 let config = match &instance.config {
@@ -133,8 +135,48 @@ pub async fn handle_messages(
                     _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
                 };
 
-                // Call Anthropic API
-                providers::anthropic::create_message(&http_client, config, anthropic_request).await
+                // Get OAuth token if needed
+                let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
+                    if let Some(ref oauth_provider_name) = config.oauth_provider {
+                        if let Some(ref manager) = oauth_manager {
+                            match manager.get_valid_token(oauth_provider_name).await {
+                                Ok(token) => {
+                                    tracing::debug!(
+                                        provider = %oauth_provider_name,
+                                        "Retrieved OAuth token for Anthropic Messages API request"
+                                    );
+                                    Some(token.access_token)
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        provider = %oauth_provider_name,
+                                        error = %e,
+                                        "Failed to get OAuth token"
+                                    );
+                                    return Err(e);
+                                }
+                            }
+                        } else {
+                            return Err(AppError::ConfigError(
+                                "OAuth mode enabled but OAuth manager not initialized".to_string()
+                            ));
+                        }
+                    } else {
+                        return Err(AppError::ConfigError(
+                            "OAuth mode enabled but oauth_provider not specified".to_string()
+                        ));
+                    }
+                } else {
+                    None
+                };
+
+                // Call Anthropic API with OAuth token if available
+                providers::anthropic::create_message(
+                    &http_client,
+                    config,
+                    anthropic_request,
+                    oauth_token.as_deref()
+                ).await
             }
         },
     )

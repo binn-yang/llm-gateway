@@ -5,7 +5,9 @@
 //! - stop: Stop a running instance
 //! - reload: Reload configuration
 //! - test: Test configuration validity
+//! - oauth: OAuth authentication management
 
+pub mod oauth;
 pub mod reload;
 pub mod start;
 pub mod stats;

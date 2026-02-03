@@ -86,6 +86,48 @@ pub async fn start_server(config: Config) -> Result<()> {
     let (shutdown_tx, signal_handle) = setup_signal_handlers(config_swap.clone(), load_balancers.clone());
     let mut shutdown_rx = shutdown_tx.subscribe();
 
+    // Initialize OAuth components if OAuth providers are configured
+    let (token_store, oauth_manager) = if !config.oauth_providers.is_empty() {
+        tracing::info!(
+            providers = config.oauth_providers.len(),
+            "Initializing OAuth support"
+        );
+
+        // Create token store directory if it doesn't exist
+        let token_store_path = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?
+            .join(".llm-gateway")
+            .join("oauth_tokens.json");
+
+        if let Some(parent) = token_store_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Initialize token store
+        let store = Arc::new(
+            crate::oauth::TokenStore::new(token_store_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to initialize token store: {}", e))?
+        );
+
+        // Initialize OAuth manager
+        let manager = Arc::new(crate::oauth::OAuthManager::new(
+            config.oauth_providers.clone(),
+            store.clone(),
+        ));
+
+        tracing::info!("OAuth support initialized successfully");
+
+        // Start automatic token refresh task
+        crate::oauth::start_auto_refresh_task(store.clone(), manager.clone());
+        tracing::info!("OAuth token auto-refresh task started (checks every 5 minutes)");
+
+        (Some(store), Some(manager))
+    } else {
+        tracing::debug!("No OAuth providers configured, skipping OAuth initialization");
+        (None, None)
+    };
+
     // Create shared state
     let router = Arc::new(ModelRouter::new(config_swap.clone()));
 
@@ -95,6 +137,8 @@ pub async fn start_server(config: Config) -> Result<()> {
         http_client: (*http_client).clone(),
         load_balancers: load_balancers.clone(),
         request_logger: request_logger.clone(),
+        token_store: token_store.clone(),
+        oauth_manager: oauth_manager.clone(),
     };
 
     // Build the Axum router
@@ -349,17 +393,19 @@ mod tests {
                 openai: vec![ProviderInstanceConfig {
                     name: "openai-primary".to_string(),
                     enabled: true,
-                    api_key: "sk-test".to_string(),
+                    api_key: Some("sk-test".to_string()),
                     base_url: "https://api.openai.com/v1".to_string(),
                     timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
                     weight: 100,
+                    auth_mode: crate::config::AuthMode::Bearer,
+                    oauth_provider: None,
                 }],
                 anthropic: vec![AnthropicInstanceConfig {
                     name: "anthropic-primary".to_string(),
                     enabled: false,
-                    api_key: "test".to_string(),
+                    api_key: Some("test".to_string()),
                     base_url: "https://api.anthropic.com/v1".to_string(),
                     timeout_seconds: 300,
                     api_version: "2023-06-01".to_string(),
@@ -367,19 +413,24 @@ mod tests {
                     failure_timeout_seconds: 60,
                     weight: 100,
                     cache: crate::config::CacheConfig::default(),
+                    auth_mode: crate::config::AuthMode::Bearer,
+                    oauth_provider: None,
                 }],
                 gemini: vec![ProviderInstanceConfig {
                     name: "gemini-primary".to_string(),
                     enabled: false,
-                    api_key: "test".to_string(),
+                    api_key: Some("test".to_string()),
                     base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
                     timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
                     weight: 100,
+                    auth_mode: crate::config::AuthMode::Bearer,
+                    oauth_provider: None,
                 }],
             },
             observability: crate::config::ObservabilityConfig::default(),
+            oauth_providers: vec![],
         }
     }
 
@@ -413,6 +464,8 @@ mod tests {
             http_client,
             load_balancers: load_balancers.clone(),
             request_logger: None,
+            token_store: None,
+            oauth_manager: None,
         };
 
         let _app = create_router(config_swap, app_state);

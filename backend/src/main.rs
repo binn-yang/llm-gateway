@@ -53,6 +53,22 @@ async fn main() -> Result<()> {
         cli::Commands::Stats { hours, detailed } => {
             commands::stats::execute(hours, detailed).await?;
         }
+        cli::Commands::OAuth { action } => {
+            match action {
+                cli::OAuthCommands::Login { provider, port, no_browser } => {
+                    commands::oauth::login(provider.clone(), port, no_browser).await?;
+                }
+                cli::OAuthCommands::Status { provider, verbose } => {
+                    commands::oauth::status(provider.clone(), verbose).await?;
+                }
+                cli::OAuthCommands::Refresh { provider } => {
+                    commands::oauth::refresh(provider.clone()).await?;
+                }
+                cli::OAuthCommands::Logout { provider } => {
+                    commands::oauth::logout(provider.clone()).await?;
+                }
+            }
+        }
         cli::Commands::Version => {
             println!("LLM Gateway v{}", env!("CARGO_PKG_VERSION"));
             println!("Rust {}", env!("CARGO_PKG_RUST_VERSION"));

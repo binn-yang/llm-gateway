@@ -127,10 +127,10 @@ impl ProviderInstanceConfigEnum {
         }
     }
 
-    pub fn api_key(&self) -> &str {
+    pub fn api_key(&self) -> Option<&str> {
         match self {
-            Self::Generic(c) => &c.api_key,
-            Self::Anthropic(c) => &c.api_key,
+            Self::Generic(c) => c.api_key.as_deref(),
+            Self::Anthropic(c) => c.api_key.as_deref(),
         }
     }
 
@@ -433,12 +433,16 @@ impl LoadBalancer {
         let health_check_url = format!("{}/models", base_url.trim_end_matches('/'));
 
         // Create a short-lived request with timeout
+        let mut request = client.get(&health_check_url);
+
+        // Add authorization header if api_key is available
+        if let Some(api_key) = instance.config.api_key() {
+            request = request.header("Authorization", format!("Bearer {}", api_key));
+        }
+
         let response = tokio::time::timeout(
             Duration::from_secs(5),  // 5 second timeout for health check
-            client
-                .get(&health_check_url)
-                .header("Authorization", format!("Bearer {}", instance.config.api_key()))
-                .send()
+            request.send()
         ).await;
 
         match response {
@@ -648,12 +652,14 @@ mod tests {
             config: ProviderInstanceConfigEnum::Generic(Arc::new(ProviderInstanceConfig {
                 name: name.to_string(),
                 enabled: true,
-                api_key: "test-key".to_string(),
+                api_key: Some("test-key".to_string()),
                 base_url: "http://localhost".to_string(),
                 timeout_seconds: 60,
                 priority,
                 failure_timeout_seconds: 60,
                 weight: 100,
+                auth_mode: crate::config::AuthMode::Bearer,
+                oauth_provider: None,
             })),
         }
     }
@@ -664,12 +670,14 @@ mod tests {
             config: ProviderInstanceConfigEnum::Generic(Arc::new(ProviderInstanceConfig {
                 name: name.to_string(),
                 enabled: false,
-                api_key: "test-key".to_string(),
+                api_key: Some("test-key".to_string()),
                 base_url: "http://localhost".to_string(),
                 timeout_seconds: 60,
                 priority,
                 failure_timeout_seconds: 60,
                 weight: 100,
+                auth_mode: crate::config::AuthMode::Bearer,
+                oauth_provider: None,
             })),
         }
     }

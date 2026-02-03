@@ -28,6 +28,10 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub load_balancers: Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<LoadBalancer>>>>,
     pub request_logger: Option<Arc<RequestLogger>>,
+    /// OAuth token store for provider authentication
+    pub token_store: Option<Arc<crate::oauth::TokenStore>>,
+    /// OAuth manager for token refresh and management
+    pub oauth_manager: Option<Arc<crate::oauth::OAuthManager>>,
 }
 
 /// Handle /v1/chat/completions endpoint
@@ -116,12 +120,14 @@ async fn handle_openai_request(
     // Execute request with sticky session (returns SessionResult)
     let request_clone = request.clone();
     let http_client = state.http_client.clone();
+    let oauth_manager = state.oauth_manager.clone();
     let session_result = crate::retry::execute_with_session(
         load_balancer.as_ref(),
         &auth.api_key_name,
         |instance| {
             let http_client = http_client.clone();
             let request_clone = request_clone.clone();
+            let oauth_manager = oauth_manager.clone();
             async move {
                 // Extract config from the instance
                 let config = match &instance.config {
@@ -129,8 +135,48 @@ async fn handle_openai_request(
                     _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
                 };
 
-                // Call OpenAI API
-                providers::openai::chat_completions(&http_client, config, request_clone).await
+                // Get OAuth token if needed
+                let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
+                    if let Some(ref oauth_provider_name) = config.oauth_provider {
+                        if let Some(ref manager) = oauth_manager {
+                            match manager.get_valid_token(oauth_provider_name).await {
+                                Ok(token) => {
+                                    tracing::debug!(
+                                        provider = %oauth_provider_name,
+                                        "Retrieved OAuth token for OpenAI request"
+                                    );
+                                    Some(token.access_token)
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        provider = %oauth_provider_name,
+                                        error = %e,
+                                        "Failed to get OAuth token"
+                                    );
+                                    return Err(e);
+                                }
+                            }
+                        } else {
+                            return Err(AppError::ConfigError(
+                                "OAuth mode enabled but OAuth manager not initialized".to_string()
+                            ));
+                        }
+                    } else {
+                        return Err(AppError::ConfigError(
+                            "OAuth mode enabled but oauth_provider not specified".to_string()
+                        ));
+                    }
+                } else {
+                    None
+                };
+
+                // Call OpenAI API with OAuth token if available
+                providers::openai::chat_completions(
+                    &http_client,
+                    config,
+                    request_clone,
+                    oauth_token.as_deref()
+                ).await
             }
         },
     )
@@ -297,12 +343,14 @@ async fn handle_anthropic_request(
 
     // Execute request with sticky session (returns SessionResult)
     let http_client = state.http_client.clone();
+    let oauth_manager = state.oauth_manager.clone();
     let session_result = crate::retry::execute_with_session(
         load_balancer.as_ref(),
         &auth.api_key_name,
         |instance| {
             let http_client = http_client.clone();
             let mut anthropic_request = anthropic_request.clone();
+            let oauth_manager = oauth_manager.clone();
             async move {
                 // Extract config from the instance
                 let config = match &instance.config {
@@ -313,8 +361,48 @@ async fn handle_anthropic_request(
                 // Apply automatic caching based on configuration
                 converters::openai_to_anthropic::apply_auto_caching(&mut anthropic_request, &config.cache);
 
-                // Call Anthropic API
-                providers::anthropic::create_message(&http_client, config, anthropic_request).await
+                // Get OAuth token if needed
+                let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
+                    if let Some(ref oauth_provider_name) = config.oauth_provider {
+                        if let Some(ref manager) = oauth_manager {
+                            match manager.get_valid_token(oauth_provider_name).await {
+                                Ok(token) => {
+                                    tracing::debug!(
+                                        provider = %oauth_provider_name,
+                                        "Retrieved OAuth token for Anthropic request"
+                                    );
+                                    Some(token.access_token)
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        provider = %oauth_provider_name,
+                                        error = %e,
+                                        "Failed to get OAuth token"
+                                    );
+                                    return Err(e);
+                                }
+                            }
+                        } else {
+                            return Err(AppError::ConfigError(
+                                "OAuth mode enabled but OAuth manager not initialized".to_string()
+                            ));
+                        }
+                    } else {
+                        return Err(AppError::ConfigError(
+                            "OAuth mode enabled but oauth_provider not specified".to_string()
+                        ));
+                    }
+                } else {
+                    None
+                };
+
+                // Call Anthropic API with OAuth token if available
+                providers::anthropic::create_message(
+                    &http_client,
+                    config,
+                    anthropic_request,
+                    oauth_token.as_deref()
+                ).await
             }
         },
     )
@@ -510,6 +598,7 @@ async fn handle_gemini_request(
 
     // Execute request with sticky session (returns SessionResult)
     let http_client = state.http_client.clone();
+    let oauth_manager = state.oauth_manager.clone();
     let model_str = model.to_string();
     let session_result = crate::retry::execute_with_session(
         load_balancer.as_ref(),
@@ -518,6 +607,7 @@ async fn handle_gemini_request(
             let http_client = http_client.clone();
             let model_str = model_str.clone();
             let gemini_request = gemini_request.clone();
+            let oauth_manager = oauth_manager.clone();
             async move {
                 // Extract config from the instance
                 let config = match &instance.config {
@@ -525,13 +615,49 @@ async fn handle_gemini_request(
                     _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
                 };
 
-                // Call Gemini API (pass through original model name)
+                // Get OAuth token if needed
+                let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
+                    if let Some(ref oauth_provider_name) = config.oauth_provider {
+                        if let Some(ref manager) = oauth_manager {
+                            match manager.get_valid_token(oauth_provider_name).await {
+                                Ok(token) => {
+                                    tracing::debug!(
+                                        provider = %oauth_provider_name,
+                                        "Retrieved OAuth token for Gemini request"
+                                    );
+                                    Some(token.access_token)
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        provider = %oauth_provider_name,
+                                        error = %e,
+                                        "Failed to get OAuth token"
+                                    );
+                                    return Err(e);
+                                }
+                            }
+                        } else {
+                            return Err(AppError::ConfigError(
+                                "OAuth mode enabled but OAuth manager not initialized".to_string()
+                            ));
+                        }
+                    } else {
+                        return Err(AppError::ConfigError(
+                            "OAuth mode enabled but oauth_provider not specified".to_string()
+                        ));
+                    }
+                } else {
+                    None
+                };
+
+                // Call Gemini API with OAuth token if available
                 providers::gemini::generate_content(
                     &http_client,
                     config,
                     &model_str,
                     gemini_request,
                     is_stream,
+                    oauth_token.as_deref()
                 )
                 .await
             }
@@ -738,17 +864,19 @@ mod tests {
                 openai: vec![ProviderInstanceConfig {
                     name: "openai-test".to_string(),
                     enabled: true,
-                    api_key: "sk-test".to_string(),
+                    api_key: Some("sk-test".to_string()),
                     base_url: "https://api.openai.com/v1".to_string(),
                     timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
                     weight: 100,
+                    auth_mode: crate::config::AuthMode::Bearer,
+                    oauth_provider: None,
                 }],
                 anthropic: vec![AnthropicInstanceConfig {
                     name: "anthropic-test".to_string(),
                     enabled: false,
-                    api_key: "test".to_string(),
+                    api_key: Some("test".to_string()),
                     base_url: "https://api.anthropic.com/v1".to_string(),
                     timeout_seconds: 300,
                     api_version: "2023-06-01".to_string(),
@@ -756,19 +884,24 @@ mod tests {
                     failure_timeout_seconds: 60,
                     weight: 100,
                     cache: crate::config::CacheConfig::default(),
+                    auth_mode: crate::config::AuthMode::Bearer,
+                    oauth_provider: None,
                 }],
                 gemini: vec![ProviderInstanceConfig {
                     name: "gemini-test".to_string(),
                     enabled: false,
-                    api_key: "test".to_string(),
+                    api_key: Some("test".to_string()),
                     base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
                     timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
                     weight: 100,
+                    auth_mode: crate::config::AuthMode::Bearer,
+                    oauth_provider: None,
                 }],
             },
             observability: crate::config::ObservabilityConfig::default(),
+            oauth_providers: vec![],
         };
 
         let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(config)));
@@ -783,6 +916,8 @@ mod tests {
             http_client,
             load_balancers,
             request_logger: None,
+            token_store: None,
+            oauth_manager: None,
         }
     }
 

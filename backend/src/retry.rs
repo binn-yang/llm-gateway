@@ -203,6 +203,8 @@ pub fn is_instance_failure(error: &AppError) -> bool {
             msg.contains("timed out") || msg.contains("timeout")
         }
         AppError::NoHealthyInstances(_) => false,
+        // OAuth errors are NOT instance failures - they're auth/config errors
+        AppError::OAuthError { .. } => false,
     }
 }
 

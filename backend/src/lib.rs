@@ -8,6 +8,7 @@ pub mod image_utils;
 pub mod load_balancer;
 pub mod logging;
 pub mod models;
+pub mod oauth;
 pub mod observability;
 pub mod providers;
 pub mod retry;
@@ -15,6 +16,9 @@ pub mod router;
 pub mod server;
 pub mod signals;
 pub mod streaming;
+
+// Re-export errors for OAuth module
+pub use error as errors;
 
 use tracing_subscriber::{fmt, prelude::*, EnvFilter, Layer};
 use tracing_appender::rolling;

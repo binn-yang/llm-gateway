@@ -9,6 +9,9 @@ pub struct Config {
     pub providers: ProvidersConfig,
     #[serde(default)]
     pub observability: ObservabilityConfig,
+    /// OAuth providers configuration for upstream authentication
+    #[serde(default)]
+    pub oauth_providers: Vec<OAuthProviderConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -97,7 +100,19 @@ impl Default for ProvidersConfig {
 pub struct ProviderInstanceConfig {
     pub name: String,
     pub enabled: bool,
-    pub api_key: String,
+
+    /// Authentication mode: bearer (API key) or oauth
+    #[serde(default = "default_auth_mode")]
+    pub auth_mode: AuthMode,
+
+    /// API key for bearer mode authentication
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+
+    /// OAuth provider name for oauth mode authentication
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_provider: Option<String>,
+
     pub base_url: String,
     pub timeout_seconds: u64,
 
@@ -117,7 +132,19 @@ pub struct ProviderInstanceConfig {
 pub struct AnthropicInstanceConfig {
     pub name: String,
     pub enabled: bool,
-    pub api_key: String,
+
+    /// Authentication mode: bearer (API key) or oauth
+    #[serde(default = "default_auth_mode")]
+    pub auth_mode: AuthMode,
+
+    /// API key for bearer mode authentication
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+
+    /// OAuth provider name for oauth mode authentication
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_provider: Option<String>,
+
     pub base_url: String,
     pub timeout_seconds: u64,
     pub api_version: String,
@@ -186,6 +213,43 @@ fn default_failure_timeout() -> u64 {
 
 fn default_weight() -> u32 {
     100
+}
+
+/// Authentication mode for provider instances
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthMode {
+    /// Use API key for authentication (default)
+    Bearer,
+    /// Use OAuth token for authentication
+    OAuth,
+}
+
+fn default_auth_mode() -> AuthMode {
+    AuthMode::Bearer
+}
+
+/// OAuth provider configuration for upstream authentication
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct OAuthProviderConfig {
+    /// Unique name for this OAuth provider
+    pub name: String,
+    /// OAuth client ID
+    pub client_id: String,
+    /// OAuth client secret (optional for PKCE flow)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    /// Authorization endpoint URL
+    pub auth_url: String,
+    /// Token endpoint URL
+    pub token_url: String,
+    /// Redirect URI for OAuth callback
+    pub redirect_uri: String,
+    /// OAuth scopes
+    pub scopes: Vec<String>,
+    /// Custom headers for token exchange requests (optional)
+    #[serde(default)]
+    pub custom_headers: std::collections::HashMap<String, String>,
 }
 
 /// Observability configuration (logs, traces, metrics persistence)
@@ -434,6 +498,9 @@ fn validate_config(cfg: &Config) -> anyhow::Result<()> {
         }
     }
 
+    // Validate OAuth provider configurations
+    validate_oauth_providers(&cfg)?;
+
     Ok(())
 }
 
@@ -458,6 +525,27 @@ fn validate_instance(instance: &ProviderInstanceConfig, provider_name: &str) -> 
     if instance.priority < 1 {
         anyhow::bail!("{} instance '{}': priority must be >= 1", provider_name, instance.name);
     }
+
+    // Validate auth_mode configuration
+    match instance.auth_mode {
+        AuthMode::Bearer => {
+            if instance.api_key.is_none() {
+                anyhow::bail!(
+                    "{} instance '{}': api_key is required for bearer auth mode",
+                    provider_name, instance.name
+                );
+            }
+        }
+        AuthMode::OAuth => {
+            if instance.oauth_provider.is_none() {
+                anyhow::bail!(
+                    "{} instance '{}': oauth_provider is required for oauth auth mode",
+                    provider_name, instance.name
+                );
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -468,6 +556,71 @@ fn validate_anthropic_instance(instance: &AnthropicInstanceConfig) -> anyhow::Re
     if instance.api_version.is_empty() {
         anyhow::bail!("Anthropic instance '{}': api_version cannot be empty", instance.name);
     }
+
+    // Validate auth_mode configuration
+    match instance.auth_mode {
+        AuthMode::Bearer => {
+            if instance.api_key.is_none() {
+                anyhow::bail!(
+                    "Anthropic instance '{}': api_key is required for bearer auth mode",
+                    instance.name
+                );
+            }
+        }
+        AuthMode::OAuth => {
+            if instance.oauth_provider.is_none() {
+                anyhow::bail!(
+                    "Anthropic instance '{}': oauth_provider is required for oauth auth mode",
+                    instance.name
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_oauth_providers(cfg: &Config) -> anyhow::Result<()> {
+    // Validate OAuth provider names are unique
+    let mut oauth_names = std::collections::HashSet::new();
+    for oauth_provider in &cfg.oauth_providers {
+        if oauth_provider.name.is_empty() {
+            anyhow::bail!("OAuth provider name cannot be empty");
+        }
+        if !oauth_names.insert(&oauth_provider.name) {
+            anyhow::bail!("OAuth provider name '{}' is duplicated", oauth_provider.name);
+        }
+    }
+
+    // Validate that oauth_provider references in instances exist
+    let validate_oauth_ref = |oauth_provider: &Option<String>, instance_name: &str, provider_type: &str| {
+        if let Some(oauth_name) = oauth_provider {
+            if !oauth_names.contains(oauth_name) {
+                anyhow::bail!(
+                    "{} instance '{}' references non-existent OAuth provider '{}'",
+                    provider_type, instance_name, oauth_name
+                );
+            }
+        }
+        Ok(())
+    };
+
+    for instance in &cfg.providers.openai {
+        if instance.auth_mode == AuthMode::OAuth {
+            validate_oauth_ref(&instance.oauth_provider, &instance.name, "OpenAI")?;
+        }
+    }
+    for instance in &cfg.providers.anthropic {
+        if instance.auth_mode == AuthMode::OAuth {
+            validate_oauth_ref(&instance.oauth_provider, &instance.name, "Anthropic")?;
+        }
+    }
+    for instance in &cfg.providers.gemini {
+        if instance.auth_mode == AuthMode::OAuth {
+            validate_oauth_ref(&instance.oauth_provider, &instance.name, "Gemini")?;
+        }
+    }
+
     Ok(())
 }
 
@@ -525,7 +678,9 @@ mod tests {
         cfg.providers.openai.push(ProviderInstanceConfig {
             name: "openai-primary".to_string(), // Duplicate name
             enabled: true,
-            api_key: "sk-test2".to_string(),
+            auth_mode: AuthMode::Bearer,
+            api_key: Some("sk-test2".to_string()),
+            oauth_provider: None,
             base_url: "https://api.openai.com/v1".to_string(),
             timeout_seconds: 300,
             priority: 2,
@@ -568,7 +723,9 @@ mod tests {
                 openai: vec![ProviderInstanceConfig {
                     name: "openai-primary".to_string(),
                     enabled: true,
-                    api_key: "sk-test".to_string(),
+                    auth_mode: AuthMode::Bearer,
+                    api_key: Some("sk-test".to_string()),
+                    oauth_provider: None,
                     base_url: "https://api.openai.com/v1".to_string(),
                     timeout_seconds: 300,
                     priority: 1,
@@ -578,7 +735,9 @@ mod tests {
                 anthropic: vec![AnthropicInstanceConfig {
                     name: "anthropic-primary".to_string(),
                     enabled: false,
-                    api_key: "sk-ant-test".to_string(),
+                    auth_mode: AuthMode::Bearer,
+                    api_key: Some("sk-ant-test".to_string()),
+                    oauth_provider: None,
                     base_url: "https://api.anthropic.com/v1".to_string(),
                     timeout_seconds: 300,
                     api_version: "2023-06-01".to_string(),
@@ -590,6 +749,7 @@ mod tests {
                 gemini: vec![],
             },
             observability: ObservabilityConfig::default(),
+            oauth_providers: vec![],
         }
     }
 }

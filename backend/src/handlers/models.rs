@@ -73,17 +73,19 @@ mod tests {
                 openai: vec![ProviderInstanceConfig {
                     name: "openai-test".to_string(),
                     enabled: true,
-                    api_key: "sk-test".to_string(),
+                    api_key: Some("sk-test".to_string()),
                     base_url: "https://api.openai.com/v1".to_string(),
                     timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
                     weight: 100,
+                    auth_mode: crate::config::AuthMode::Bearer,
+                    oauth_provider: None,
                 }],
                 anthropic: vec![AnthropicInstanceConfig {
                     name: "anthropic-test".to_string(),
                     enabled: true,
-                    api_key: "test".to_string(),
+                    api_key: Some("test".to_string()),
                     base_url: "https://api.anthropic.com/v1".to_string(),
                     timeout_seconds: 300,
                     api_version: "2023-06-01".to_string(),
@@ -91,19 +93,24 @@ mod tests {
                     failure_timeout_seconds: 60,
                     weight: 100,
                     cache: crate::config::CacheConfig::default(),
+                    auth_mode: crate::config::AuthMode::Bearer,
+                    oauth_provider: None,
                 }],
                 gemini: vec![ProviderInstanceConfig {
                     name: "gemini-test".to_string(),
                     enabled: false,
-                    api_key: "test".to_string(),
+                    api_key: Some("test".to_string()),
                     base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
                     timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
                     weight: 100,
+                    auth_mode: crate::config::AuthMode::Bearer,
+                    oauth_provider: None,
                 }],
             },
             observability: crate::config::ObservabilityConfig::default(),
+            oauth_providers: vec![],
         };
 
         let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(config)));
@@ -118,6 +125,8 @@ mod tests {
             http_client,
             load_balancers,
             request_logger: None,
+            token_store: None,
+            oauth_manager: None,
         }
     }
 

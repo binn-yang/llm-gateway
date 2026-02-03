@@ -39,12 +39,14 @@ pub fn create_stress_test_config(
         .map(|i| ProviderInstanceConfig {
             name: format!("openai-instance-{}", i),
             enabled: true,
-            api_key: "mock-key".to_string(),
+            api_key: Some("mock-key".to_string()),
             base_url: mock_openai_url.to_string(),
             timeout_seconds: 30,
             priority: (i / (num_instances_per_provider / 3).max(1)) as u32 + 1,  // 均匀分布优先级
             failure_timeout_seconds: 60,
             weight: 100,
+            auth_mode: llm_gateway::config::AuthMode::Bearer,
+            oauth_provider: None,
         })
         .collect();
 
@@ -53,7 +55,7 @@ pub fn create_stress_test_config(
         .map(|i| AnthropicInstanceConfig {
             name: format!("anthropic-instance-{}", i),
             enabled: true,
-            api_key: "mock-key".to_string(),
+            api_key: Some("mock-key".to_string()),
             base_url: mock_anthropic_url.to_string(),
             timeout_seconds: 30,
             api_version: "2023-06-01".to_string(),
@@ -65,6 +67,8 @@ pub fn create_stress_test_config(
                 min_system_tokens: 1024,
                 auto_cache_tools: true,
             },
+            auth_mode: llm_gateway::config::AuthMode::Bearer,
+            oauth_provider: None,
         })
         .collect();
 
@@ -91,6 +95,7 @@ pub fn create_stress_test_config(
             anthropic: anthropic_instances,
             gemini: vec![],
         },
+        oauth_providers: vec![],
         observability: ObservabilityConfig {
             enabled: false,  // 压力测试时禁用观测
             database_path: ":memory:".to_string(),
@@ -161,37 +166,44 @@ pub fn create_weighted_instance_config(
                 ProviderInstanceConfig {
                     name: "openai-0".to_string(),
                     enabled: true,
-                    api_key: "mock-key".to_string(),
+                    api_key: Some("mock-key".to_string()),
                     base_url: format!("{}/instance-0", mock_url),
                     timeout_seconds: 30,
                     priority: 1,
                     failure_timeout_seconds: 60,
                     weight: 100,
+                    auth_mode: llm_gateway::config::AuthMode::Bearer,
+                    oauth_provider: None,
                 },
                 ProviderInstanceConfig {
                     name: "openai-1".to_string(),
                     enabled: true,
-                    api_key: "mock-key".to_string(),
+                    api_key: Some("mock-key".to_string()),
                     base_url: format!("{}/instance-1", mock_url),
                     timeout_seconds: 30,
                     priority: 2,
                     failure_timeout_seconds: 60,
                     weight: 200,
+                    auth_mode: llm_gateway::config::AuthMode::Bearer,
+                    oauth_provider: None,
                 },
                 ProviderInstanceConfig {
                     name: "openai-2".to_string(),
                     enabled: true,
-                    api_key: "mock-key".to_string(),
+                    api_key: Some("mock-key".to_string()),
                     base_url: format!("{}/instance-2", mock_url),
                     timeout_seconds: 30,
                     priority: 2,
                     failure_timeout_seconds: 60,
                     weight: 100,
+                    auth_mode: llm_gateway::config::AuthMode::Bearer,
+                    oauth_provider: None,
                 },
             ],
             anthropic: vec![],
             gemini: vec![],
         },
+        oauth_providers: vec![],
         observability: ObservabilityConfig {
             enabled: false,
             database_path: ":memory:".to_string(),
@@ -251,27 +263,32 @@ pub fn create_failover_config(
                 ProviderInstanceConfig {
                     name: "openai-primary".to_string(),
                     enabled: true,
-                    api_key: "mock-key".to_string(),
+                    api_key: Some("mock-key".to_string()),
                     base_url: primary_url.to_string(),
                     timeout_seconds: 30,
                     priority: 1,  // 高优先级
                     failure_timeout_seconds: 5,  // 快速恢复测试
                     weight: 100,
+                    auth_mode: llm_gateway::config::AuthMode::Bearer,
+                    oauth_provider: None,
                 },
                 ProviderInstanceConfig {
                     name: "openai-backup".to_string(),
                     enabled: true,
-                    api_key: "mock-key".to_string(),
+                    api_key: Some("mock-key".to_string()),
                     base_url: backup_url.to_string(),
                     timeout_seconds: 30,
                     priority: 2,  // 低优先级
                     failure_timeout_seconds: 5,
                     weight: 100,
+                    auth_mode: llm_gateway::config::AuthMode::Bearer,
+                    oauth_provider: None,
                 },
             ],
             anthropic: vec![],
             gemini: vec![],
         },
+        oauth_providers: vec![],
         observability: ObservabilityConfig {
             enabled: false,
             database_path: ":memory:".to_string(),

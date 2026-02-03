@@ -14,6 +14,7 @@ pub async fn generate_content(
     model: &str,
     request: GenerateContentRequest,
     stream: bool,
+    oauth_token: Option<&str>,
 ) -> Result<reqwest::Response, AppError> {
     // Gemini API format: /v1beta/models/{model}:generateContent
     let url = format!("{}/models/{}:generateContent", config.base_url, model);
@@ -21,8 +22,18 @@ pub async fn generate_content(
     let mut builder = client
         .post(&url)
         .header("Content-Type", "application/json")
-        .timeout(Duration::from_secs(config.timeout_seconds))
-        .query(&[("key", &config.api_key)]);
+        .timeout(Duration::from_secs(config.timeout_seconds));
+
+    // Add authentication - OAuth token or API key
+    if let Some(token) = oauth_token {
+        builder = builder.header("Authorization", format!("Bearer {}", token));
+    } else if let Some(api_key) = &config.api_key {
+        builder = builder.query(&[("key", api_key.as_str())]);
+    } else {
+        return Err(AppError::ConfigError(
+            "No authentication credentials provided".to_string()
+        ));
+    }
 
     // Add streaming parameter if needed
     if stream {
@@ -56,12 +67,14 @@ mod tests {
         ProviderInstanceConfig {
             name: "test-instance".to_string(),
             enabled: true,
-            api_key: "test-key".to_string(),
+            api_key: Some("test-key".to_string()),
             base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
             timeout_seconds: 30,
             priority: 1,
             failure_timeout_seconds: 60,
             weight: 100,
+            auth_mode: crate::config::AuthMode::Bearer,
+            oauth_provider: None,
         }
     }
 

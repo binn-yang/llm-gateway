@@ -11,15 +11,28 @@ pub async fn create_message(
     client: &Client,
     config: &AnthropicInstanceConfig,
     request: MessagesRequest,
+    oauth_token: Option<&str>,
 ) -> Result<reqwest::Response, AppError> {
     let url = format!("{}/messages", config.base_url);
 
-    let response = client
+    let mut req = client
         .post(&url)
-        .header("x-api-key", &config.api_key)
         .header("anthropic-version", &config.api_version)
         .header("Content-Type", "application/json")
-        .timeout(Duration::from_secs(config.timeout_seconds))
+        .timeout(Duration::from_secs(config.timeout_seconds));
+
+    // Add authentication header based on auth mode
+    if let Some(token) = oauth_token {
+        req = req.header("Authorization", format!("Bearer {}", token));
+    } else if let Some(api_key) = &config.api_key {
+        req = req.header("x-api-key", api_key);
+    } else {
+        return Err(AppError::ConfigError(
+            "No authentication credentials provided".to_string()
+        ));
+    }
+
+    let response = req
         .json(&request)
         .send()
         .await?;
@@ -46,7 +59,9 @@ mod tests {
         AnthropicInstanceConfig {
             name: "test-instance".to_string(),
             enabled: true,
-            api_key: "sk-ant-test-key".to_string(),
+            auth_mode: crate::config::AuthMode::Bearer,
+            api_key: Some("sk-ant-test-key".to_string()),
+            oauth_provider: None,
             base_url: "https://api.anthropic.com/v1".to_string(),
             timeout_seconds: 30,
             api_version: "2023-06-01".to_string(),

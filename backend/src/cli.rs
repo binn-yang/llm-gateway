@@ -63,6 +63,52 @@ pub enum Commands {
 
     /// Show version information
     Version,
+
+    /// OAuth authentication management
+    #[command(name = "oauth")]
+    OAuth {
+        #[command(subcommand)]
+        action: OAuthCommands,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum OAuthCommands {
+    /// Login to an OAuth provider
+    Login {
+        /// OAuth provider name
+        provider: String,
+
+        /// Local callback server port
+        #[arg(short, long, default_value = "54545")]
+        port: u16,
+
+        /// Don't automatically open browser
+        #[arg(long)]
+        no_browser: bool,
+    },
+
+    /// Show OAuth token status
+    Status {
+        /// OAuth provider name (optional, shows all if omitted)
+        provider: Option<String>,
+
+        /// Show verbose information
+        #[arg(short, long)]
+        verbose: bool,
+    },
+
+    /// Manually refresh OAuth token
+    Refresh {
+        /// OAuth provider name
+        provider: String,
+    },
+
+    /// Logout from OAuth provider (delete token)
+    Logout {
+        /// OAuth provider name
+        provider: String,
+    },
 }
 
 impl Cli {
@@ -122,15 +168,15 @@ mod tests {
     }
 
     #[test]
-    fn test_cli_parsing_config_show() {
-        let args = vec!["gateway", "config", "show"];
+    fn test_cli_parsing_oauth_login() {
+        let args = vec!["gateway", "oauth", "login", "test-provider"];
         let cli = Cli::try_parse_from(args).unwrap();
 
         match cli.get_command() {
-            Commands::Config { action } => {
-                matches!(action, ConfigCommands::Show);
+            Commands::OAuth { action } => {
+                matches!(action, OAuthCommands::Login { .. });
             }
-            _ => panic!("Expected Config command"),
+            _ => panic!("Expected OAuth command"),
         }
     }
 }

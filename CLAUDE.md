@@ -49,6 +49,38 @@ cargo test test_name
 cargo test -- --nocaptures
 ```
 
+### OAuth Commands (NEW in v0.5.0)
+```bash
+# Login to OAuth provider (obtain provider OAuth token)
+./target/release/llm-gateway oauth login <provider_name>
+./target/release/llm-gateway oauth login anthropic
+
+# OAuth login process:
+# 1. Browser opens to authorization page (or displays URL to copy)
+# 2. Grant permissions in browser
+# 3. MANUALLY COPY the complete callback URL from browser address bar
+#    Example: https://platform.claude.com/oauth/code/callback?code=xxx&state=yyy
+# 4. PASTE the URL into CLI prompt
+# 5. Token exchange completes automatically
+
+# Optional flags:
+#   --no-browser         Don't auto-open browser (display URL only)
+# Note: --port flag is ignored for providers using remote callbacks (like Anthropic)
+
+# Check OAuth token status
+./target/release/llm-gateway oauth status [provider_name]
+./target/release/llm-gateway oauth status anthropic
+
+# Verbose status (shows scopes, creation time, metadata)
+./target/release/llm-gateway oauth status anthropic -v
+
+# Refresh OAuth token manually
+./target/release/llm-gateway oauth refresh <provider_name>
+
+# Logout (delete OAuth token)
+./target/release/llm-gateway oauth logout <provider_name>
+```
+
 ### Configuration Management
 ```bash
 # Validate config
@@ -181,6 +213,92 @@ failure_timeout_seconds = 60      # Auto-recovery timeout
 ```
 
 **Important**: Providers are now **arrays** (`Vec<ProviderInstanceConfig>`), not single instances.
+
+#### 4.1. OAuth Authentication System (NEW in v0.5.0)
+
+**Files**: `src/oauth/*`
+
+Provider authentication now supports two modes: **Bearer** (API key) and **OAuth** (token-based):
+
+**Authentication Modes**:
+```toml
+# Bearer mode (default) - use API key
+[[providers.anthropic]]
+name = "anthropic-api-key"
+enabled = true
+auth_mode = "bearer"
+api_key = "sk-ant-..."
+# ...
+
+# OAuth mode - use OAuth token
+[[providers.anthropic]]
+name = "anthropic-oauth"
+enabled = true
+auth_mode = "oauth"
+oauth_provider = "anthropic"  # Reference to oauth_providers
+# No api_key needed
+# ...
+
+# OAuth provider configuration (CORRECTED VALUES)
+[[oauth_providers]]
+name = "anthropic"
+client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"  # Official client ID
+auth_url = "https://claude.ai/oauth/authorize"      # Note: claude.ai domain
+token_url = "https://console.anthropic.com/v1/oauth/token"  # Note: includes /v1
+redirect_uri = "https://platform.claude.com/oauth/code/callback"  # Remote callback
+scopes = [
+  "org:create_api_key",
+  "user:profile",
+  "user:inference",
+  "user:sessions:claude_code"
+]
+```
+
+**OAuth Flow (Manual URL Copy Method)**:
+1. Run `llm-gateway oauth login anthropic`
+2. Browser opens to provider's authorization page (or displays URL)
+3. User grants permission in browser
+4. Browser redirects to `https://platform.claude.com/oauth/code/callback?code=xxx&state=yyy`
+5. **User manually copies complete URL** from browser address bar
+6. **User pastes URL** into CLI prompt
+7. Gateway extracts code and state from URL
+8. Gateway validates state parameter (CSRF protection)
+9. Gateway exchanges code for access + refresh tokens (PKCE flow)
+10. Tokens stored encrypted in `~/.llm-gateway/oauth_tokens.json`
+
+**Why Manual URL Copy?**:
+- Official Anthropic `client_id` uses remote `redirect_uri` (not localhost)
+- Gateway cannot receive callback directly (not running on platform.claude.com)
+- Manual copy ensures compatibility with official OAuth credentials
+- Alternative local callback is possible with custom client_id (if available)
+
+**Token Management**:
+- **Automatic Refresh**: Background task checks every 5 minutes, refreshes tokens expiring within 10 minutes
+- **On-Demand Refresh**: Before each request, checks if token expires within 1 minute
+- **Concurrent Safety**: Uses mutex to prevent multiple simultaneous refreshes
+- **Error Handling**: If refresh fails, returns clear error message with login instructions
+
+**Key Components**:
+- `src/oauth/token_store.rs` - Encrypted token storage using AES-256-GCM
+- `src/oauth/manager.rs` - Token lifecycle management
+- `src/oauth/refresh.rs` - Automatic refresh background task
+- `src/oauth/callback_server.rs` - Local HTTP server (for localhost callbacks only)
+- `src/oauth/pkce.rs` - PKCE code generation for secure OAuth flow
+- `src/oauth/providers/anthropic.rs` - Anthropic OAuth provider implementation
+
+**Usage in Handlers**:
+```rust
+// In handlers, OAuth token is retrieved automatically based on auth_mode
+let oauth_token = if config.auth_mode == AuthMode::OAuth {
+    let oauth_manager = state.oauth_manager.as_ref().unwrap();
+    Some(oauth_manager.get_valid_token(config.oauth_provider.as_ref().unwrap()).await?.access_token)
+} else {
+    None
+};
+
+// Pass to provider
+providers::anthropic::create_message(&http_client, config, request, oauth_token.as_deref()).await
+```
 
 #### 5. Observability System (NEW in v0.4.0)
 
@@ -589,6 +707,158 @@ enabled = true
 cache_ttl_seconds = 3600
 providers_with_listing = ["openai"]  # Providers supporting model listing API
 ```
+
+### OAuth Configuration (NEW in v0.5.0)
+
+#### Correct Anthropic OAuth Configuration
+
+**CRITICAL**: Use the official Anthropic OAuth credentials (verified as of 2026-02):
+
+```toml
+# OAuth provider configuration
+[[oauth_providers]]
+name = "anthropic"
+# Official Anthropic OAuth client ID (public, safe to use)
+client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+# Authorization endpoint (uses claude.ai domain, NOT console.anthropic.com)
+auth_url = "https://claude.ai/oauth/authorize"
+# Token endpoint (note: includes /v1 in path)
+token_url = "https://console.anthropic.com/v1/oauth/token"
+# Remote callback (requires manual URL copy-paste)
+redirect_uri = "https://platform.claude.com/oauth/code/callback"
+# Complete scope list for Claude Code integration
+scopes = [
+  "org:create_api_key",        # Create API keys
+  "user:profile",              # Access user profile
+  "user:inference",            # Make API requests
+  "user:sessions:claude_code"  # Claude Code integration
+]
+
+# Optional: custom headers for token exchange (usually not needed)
+# [oauth_providers.custom_headers]
+# "User-Agent" = "llm-gateway/0.5.0"
+
+# Provider instance using OAuth
+[[providers.anthropic]]
+name = "anthropic-oauth"
+enabled = true
+auth_mode = "oauth"              # Use OAuth instead of API key
+oauth_provider = "anthropic"     # Reference to oauth_providers
+base_url = "https://api.anthropic.com/v1"
+timeout_seconds = 300
+priority = 1
+```
+
+#### OAuth Workflow (Manual URL Copy Method)
+
+Because the official `redirect_uri` is remote (`https://platform.claude.com/oauth/code/callback`), the gateway uses a **manual URL copy-paste flow**:
+
+1. **Configure** `oauth_providers` in `config.toml` (use exact values above)
+
+2. **Run OAuth login**:
+   ```bash
+   ./target/release/llm-gateway oauth login anthropic
+   ```
+
+3. **Browser opens automatically** (or copy the displayed URL)
+   - You'll be redirected to Anthropic's authorization page
+   - Grant the requested permissions
+
+4. **After authorization**, the browser redirects to `platform.claude.com`
+   - **Copy the COMPLETE URL** from your browser's address bar
+   - It looks like: `https://platform.claude.com/oauth/code/callback?code=xxx&state=yyy`
+
+5. **Paste the URL** into the CLI prompt and press Enter
+
+6. **Token exchange completes** automatically
+   - Access token and refresh token are saved to `~/.llm-gateway/oauth_tokens.json`
+   - Tokens are encrypted with machine-specific key
+
+7. **Auto-refresh runs** every 5 minutes for tokens expiring within 10 minutes
+
+#### OAuth Configuration Reference
+
+**Key Parameters Explained**:
+- `client_id`: Official Anthropic OAuth client (UUID format)
+- `auth_url`: Must use `claude.ai` domain (NOT `console.anthropic.com`)
+- `token_url`: Must include `/v1` in path
+- `redirect_uri`: Official remote callback (NOT localhost)
+- `code=true`: Automatically added by gateway (Anthropic requirement)
+- `scopes`: Space-separated in URL (gateway converts from array)
+
+**Common Configuration Errors**:
+❌ Wrong: `client_id = "claude-code-cli"` (old/incorrect value)
+✅ Right: `client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"`
+
+❌ Wrong: `auth_url = "https://console.anthropic.com/oauth/authorize"`
+✅ Right: `auth_url = "https://claude.ai/oauth/authorize"`
+
+❌ Wrong: `token_url = "https://console.anthropic.com/oauth/token"` (missing /v1)
+✅ Right: `token_url = "https://console.anthropic.com/v1/oauth/token"`
+
+❌ Wrong: `redirect_uri = "http://localhost:54545/callback"` (won't work with official client_id)
+✅ Right: `redirect_uri = "https://platform.claude.com/oauth/code/callback"`
+
+❌ Wrong: `scopes = ["api"]` (insufficient permissions)
+✅ Right: Full scope list (see config above)
+
+#### Troubleshooting OAuth Issues
+
+**Problem: "Token exchange failed" error**
+- **Cause**: Wrong `token_url` (missing `/v1`)
+- **Solution**: Use `https://console.anthropic.com/v1/oauth/token`
+
+**Problem: "State parameter mismatch" error**
+- **Cause**: Copied wrong URL or CSRF attack
+- **Solution**: Make sure to copy the complete URL including `?code=xxx&state=yyy`
+
+**Problem: "Invalid callback URL domain" error**
+- **Cause**: URL doesn't contain `claude.com` or `anthropic.com`
+- **Solution**: Only paste URLs from official Anthropic domains
+
+**Problem: OAuth login opens browser but doesn't work**
+- **Cause**: Using localhost redirect_uri with official client_id
+- **Solution**: Use official `redirect_uri` (requires manual URL copy)
+
+**Problem: "Client authentication failed" error**
+- **Cause**: Wrong `client_id`
+- **Solution**: Use official client_id `9d1c250a-e61b-44d9-88ed-5944d1962f5e`
+
+#### Token Management
+
+**Token Storage**:
+- Location: `~/.llm-gateway/oauth_tokens.json`
+- Encryption: AES-256-GCM with machine-specific key
+- Format: JSON with encrypted access_token and refresh_token
+
+**Token Lifecycle**:
+- **Expiration**: Typically 1 hour for access tokens
+- **Auto-refresh**: Triggers when < 1 minute remaining (on-demand) or < 10 minutes (background task)
+- **Manual refresh**: `llm-gateway oauth refresh anthropic`
+- **Logout**: `llm-gateway oauth logout anthropic` (deletes token)
+
+**Token Metadata** (stored but not displayed by default):
+- `organization`: Organization details
+- `account`: Account information
+- `subscription_info`: Subscription status
+
+**Check Token Status**:
+```bash
+# Basic status
+llm-gateway oauth status anthropic
+
+# Detailed status (includes scopes, creation time)
+llm-gateway oauth status anthropic -v
+```
+
+#### Important Notes
+
+- **Token storage** uses machine-specific encryption key (not portable)
+- **Each provider instance** can be either `bearer` or `oauth` mode (not both)
+- **OAuth tokens** are automatically refreshed before expiration
+- **If refresh fails**, clear error message directs user to re-login
+- **Multiple providers** can use OAuth simultaneously (each with its own token)
+- **Manual URL copy** is required due to official remote redirect_uri
 
 ### Observability Configuration
 
