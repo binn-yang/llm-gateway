@@ -67,15 +67,59 @@ pub async fn handle_chat_completions(
         "Handling chat completion request"
     );
 
+    // Log request body if enabled
+    let config = state.config.load();
+    if config.observability.body_logging.enabled {
+        let body_content = if config.observability.body_logging.simple_mode {
+            // Simple mode: extract only user messages (no redaction)
+            crate::logging::extract_simple_request_openai(&request)
+        } else {
+            // Full mode: log complete request with redaction
+            let request_body = serde_json::to_string(&request)
+                .unwrap_or_else(|_| "{}".to_string());
+            let redacted_body = crate::logging::redact_sensitive_data(
+                &request_body,
+                &config.observability.body_logging.redact_patterns
+            );
+            let (final_body, _) = crate::logging::truncate_body(
+                redacted_body,
+                config.observability.body_logging.max_body_size
+            );
+            final_body
+        };
+
+        tracing::info!(
+            parent: &span,
+            event_type = if config.observability.body_logging.simple_mode {
+                "simple_request"
+            } else {
+                "request_body"
+            },
+            body = %body_content,
+            body_size = body_content.len(),
+            truncated = false,
+            "Request body"
+        );
+    }
+
     // Route to provider
+    let routing_start = Instant::now();
     let route_info = state.router.route(&model)?;
+    let routing_duration = routing_start.elapsed().as_millis();
 
     // Record provider in span
     span.record("provider", route_info.provider.to_string().as_str());
 
     tracing::debug!(
+        parent: &span,
+        event_type = "trace_span",
+        span_name = "route_model",
+        span_type = "routing",
+        duration_ms = routing_duration,
+        status = "ok",
+        target_provider = route_info.provider.to_string().as_str(),
         requires_conversion = route_info.requires_conversion,
-        "Routed model to provider"
+        "Routing span completed"
     );
 
     // Route based on provider (model name is passed through directly)
@@ -231,9 +275,12 @@ async fn handle_openai_request(
         // Spawn background task to update tokens when stream completes
         if let Some(logger) = state.request_logger.clone() {
             let request_id_owned = request_id.to_string();
+            let tracker_clone = tracker.clone();
+            let config = state.config.load().clone();
+            let span_clone = span.clone();
             tokio::spawn(async move {
                 // Wait for tracker to notify completion (no polling/sleeping!)
-                if let Some((input, output, cache_creation, cache_read)) = tracker.wait_for_completion().await {
+                if let Some((input, output, cache_creation, cache_read)) = tracker_clone.wait_for_completion().await {
                     logger.update_tokens(
                         &request_id_owned,
                         input as i64,
@@ -242,6 +289,42 @@ async fn handle_openai_request(
                         cache_creation as i64,
                         cache_read as i64,
                     ).await;
+
+                    // Log response body if enabled
+                    if config.observability.body_logging.enabled {
+                        let accumulated_response = tracker_clone.get_accumulated_response();
+
+                        let body_content = if config.observability.body_logging.simple_mode {
+                            // Simple mode: extract only text deltas (no redaction)
+                            crate::logging::extract_simple_response_streaming(&accumulated_response)
+                        } else {
+                            // Full mode: log complete response with redaction
+                            let redacted = crate::logging::redact_sensitive_data(
+                                &accumulated_response,
+                                &config.observability.body_logging.redact_patterns
+                            );
+                            let (truncated_body, _) = crate::logging::truncate_body(
+                                redacted,
+                                config.observability.body_logging.max_body_size
+                            );
+                            truncated_body
+                        };
+
+                        tracing::info!(
+                            parent: &span_clone,
+                            event_type = if config.observability.body_logging.simple_mode {
+                                "simple_response"
+                            } else {
+                                "response_body"
+                            },
+                            body = %body_content,
+                            body_size = body_content.len(),
+                            truncated = false,
+                            streaming = true,
+                            chunks_count = tracker_clone.chunks_count(),
+                            "Response body"
+                        );
+                    }
                 } else {
                     tracing::warn!(
                         request_id = %request_id_owned,
@@ -255,6 +338,43 @@ async fn handle_openai_request(
     } else {
         // Non-streaming response
         let body: ChatCompletionResponse = response.json().await?;
+
+        // Log response body if enabled
+        let config = state.config.load();
+        if config.observability.body_logging.enabled {
+            let body_content = if config.observability.body_logging.simple_mode {
+                // Simple mode: extract only assistant text (no redaction)
+                crate::logging::extract_simple_response_openai(&body)
+            } else {
+                // Full mode: log complete response with redaction
+                let response_body = serde_json::to_string(&body)
+                    .unwrap_or_else(|_| "{}".to_string());
+                let redacted_response = crate::logging::redact_sensitive_data(
+                    &response_body,
+                    &config.observability.body_logging.redact_patterns
+                );
+                let (final_response, _) = crate::logging::truncate_body(
+                    redacted_response,
+                    config.observability.body_logging.max_body_size
+                );
+                final_response
+            };
+
+            tracing::info!(
+                parent: span,
+                event_type = if config.observability.body_logging.simple_mode {
+                    "simple_response"
+                } else {
+                    "response_body"
+                },
+                body = %body_content,
+                body_size = body_content.len(),
+                truncated = false,
+                streaming = false,
+                chunks_count = 0,
+                "Response body"
+            );
+        }
 
         // Extract usage
         let (input_tokens, output_tokens, total_tokens) = match &body.usage {

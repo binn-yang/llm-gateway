@@ -37,6 +37,10 @@ pub struct StreamingUsageTracker {
     cache_read_input_tokens: Arc<Mutex<Option<u64>>>,
     /// Completion notification: sender completes when stream ends
     completion_tx: Arc<tokio::sync::watch::Sender<bool>>,
+    /// Accumulated chunks for body logging
+    accumulated_chunks: Arc<Mutex<Vec<String>>>,
+    max_chunks: usize,
+    max_total_size: usize,
 }
 
 impl StreamingUsageTracker {
@@ -50,6 +54,9 @@ impl StreamingUsageTracker {
             cache_creation_input_tokens: Arc::new(Mutex::new(None)),
             cache_read_input_tokens: Arc::new(Mutex::new(None)),
             completion_tx: Arc::new(completion_tx),
+            accumulated_chunks: Arc::new(Mutex::new(Vec::new())),
+            max_chunks: 1000,
+            max_total_size: 1_000_000, // 1MB
         }
     }
 
@@ -164,6 +171,31 @@ impl StreamingUsageTracker {
     pub fn request_id(&self) -> &str {
         &self.request_id
     }
+
+    /// Accumulate a chunk for body logging (with size limits)
+    pub fn accumulate_chunk(&self, chunk: &str) {
+        let mut chunks = self.accumulated_chunks.lock().unwrap();
+
+        // Check limits
+        if chunks.len() < self.max_chunks {
+            let total_size: usize = chunks.iter().map(|c| c.len()).sum();
+            if total_size + chunk.len() < self.max_total_size {
+                chunks.push(chunk.to_string());
+            }
+        }
+    }
+
+    /// Get accumulated response (all chunks joined)
+    pub fn get_accumulated_response(&self) -> String {
+        let chunks = self.accumulated_chunks.lock().unwrap();
+        chunks.join("")
+    }
+
+    /// Get number of accumulated chunks
+    pub fn chunks_count(&self) -> usize {
+        let chunks = self.accumulated_chunks.lock().unwrap();
+        chunks.len()
+    }
 }
 
 /// Wrapper for OpenAI SSE stream that extracts usage information
@@ -233,6 +265,9 @@ pub fn create_openai_sse_stream_with_tracker(
 
                 for line in text.lines() {
                     if let Some(data) = line.strip_prefix("data: ") {
+                        // Accumulate chunk for body logging
+                        tracker.accumulate_chunk(line);
+
                         if data == "[DONE]" {
                             return Ok(Event::default().data("[DONE]"));
                         }
@@ -748,6 +783,9 @@ pub fn create_native_anthropic_sse_stream_with_tracker(
                 while let Some(event_end) = buf.find("\n\n") {
                     let event_text = buf[..event_end].to_string();
                     *buf = buf[event_end + 2..].to_string(); // +2 to skip "\n\n"
+
+                    // Accumulate chunk for body logging
+                    tracker.accumulate_chunk(&event_text);
 
                     // Parse this complete SSE event
                     let mut current_event_type: Option<String> = None;

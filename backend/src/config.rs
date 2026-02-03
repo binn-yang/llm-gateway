@@ -274,6 +274,10 @@ pub struct ObservabilityConfig {
     /// Metrics snapshot configuration
     #[serde(default)]
     pub metrics_snapshot: MetricsSnapshotConfig,
+
+    /// Body logging configuration (request/response bodies)
+    #[serde(default)]
+    pub body_logging: BodyLoggingConfig,
 }
 
 impl Default for ObservabilityConfig {
@@ -284,6 +288,7 @@ impl Default for ObservabilityConfig {
             performance: ObservabilityPerformanceConfig::default(),
             retention: ObservabilityRetentionConfig::default(),
             metrics_snapshot: MetricsSnapshotConfig::default(),
+            body_logging: BodyLoggingConfig::default(),
         }
     }
 }
@@ -363,6 +368,53 @@ impl Default for MetricsSnapshotConfig {
     }
 }
 
+/// Body logging configuration for request/response bodies
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BodyLoggingConfig {
+    /// Enable body logging (default: true)
+    #[serde(default = "default_body_logging_enabled")]
+    pub enabled: bool,
+
+    /// Maximum body size to log in bytes (default: 102400 = 100KB)
+    #[serde(default = "default_max_body_size")]
+    pub max_body_size: usize,
+
+    /// Log level for body content (default: "info")
+    #[serde(default = "default_body_log_level")]
+    pub log_level: String,
+
+    /// Redaction patterns for sensitive data
+    #[serde(default)]
+    pub redact_patterns: Vec<RedactPattern>,
+
+    /// Simple mode: only log user messages and assistant text responses
+    /// Excludes: system prompts, tool definitions, images, metadata
+    /// (default: false)
+    #[serde(default = "default_simple_mode")]
+    pub simple_mode: bool,
+}
+
+impl Default for BodyLoggingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_body_logging_enabled(),
+            max_body_size: default_max_body_size(),
+            log_level: default_body_log_level(),
+            redact_patterns: default_redact_patterns(),
+            simple_mode: default_simple_mode(),
+        }
+    }
+}
+
+/// Pattern for redacting sensitive data in logs
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RedactPattern {
+    /// Regex pattern to match
+    pub pattern: String,
+    /// Replacement string
+    pub replacement: String,
+}
+
 // Default value functions for observability config
 fn default_database_path() -> String {
     "./data/observability.db".to_string()
@@ -402,6 +454,39 @@ fn default_metrics_snapshot_enabled() -> bool {
 
 fn default_snapshot_interval_seconds() -> u64 {
     300
+}
+
+fn default_body_logging_enabled() -> bool {
+    true
+}
+
+fn default_max_body_size() -> usize {
+    102400 // 100KB
+}
+
+fn default_body_log_level() -> String {
+    "info".to_string()
+}
+
+fn default_redact_patterns() -> Vec<RedactPattern> {
+    vec![
+        RedactPattern {
+            pattern: r"sk-[a-zA-Z0-9]{48}".to_string(),
+            replacement: "sk-***REDACTED***".to_string(),
+        },
+        RedactPattern {
+            pattern: r"sk-ant-[a-zA-Z0-9-]{95}".to_string(),
+            replacement: "sk-ant-***REDACTED***".to_string(),
+        },
+        RedactPattern {
+            pattern: r"Bearer [a-zA-Z0-9._-]+".to_string(),
+            replacement: "Bearer ***REDACTED***".to_string(),
+        },
+    ]
+}
+
+fn default_simple_mode() -> bool {
+    false
 }
 
 pub fn load_config() -> anyhow::Result<Config> {

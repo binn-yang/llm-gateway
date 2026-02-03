@@ -406,6 +406,86 @@ GET /api/dashboard/logs?date=2026-01-21
 - Query API reads files directly (no database dependency)
 - Searches last 2 days by default (today + yesterday)
 
+**Body Logging Enhancement** (NEW in v0.5.0):
+
+The logging system now supports detailed request/response body logging with the following features:
+
+**Configuration** (`config.toml`):
+```toml
+[observability.body_logging]
+enabled = true                    # Enable body logging (default: true)
+max_body_size = 102400            # Max body size in bytes (100KB)
+log_level = "info"                # Log level for body content
+
+# Redaction patterns for sensitive data
+[[observability.body_logging.redact_patterns]]
+pattern = "sk-[a-zA-Z0-9]{48}"
+replacement = "sk-***REDACTED***"
+```
+
+**New Event Types**:
+
+1. **request_body** - Logged at request start:
+```json
+{
+  "event_type": "request_body",
+  "fields": {
+    "body": "{\"model\":\"claude-3-5-sonnet-20241022\",\"messages\":[...]}",
+    "body_size": 1234,
+    "truncated": false
+  }
+}
+```
+
+2. **response_body** - Logged at response completion:
+```json
+{
+  "event_type": "response_body",
+  "fields": {
+    "body": "{\"id\":\"msg_123\",\"content\":[...]}",
+    "body_size": 5678,
+    "truncated": false,
+    "streaming": false,
+    "chunks_count": 0
+  }
+}
+```
+
+3. **trace_span** - Logged for internal operations:
+```json
+{
+  "event_type": "trace_span",
+  "fields": {
+    "span_name": "route_model",
+    "span_type": "routing",
+    "duration_ms": 1,
+    "status": "ok",
+    "target_provider": "anthropic"
+  }
+}
+```
+
+**Key Features**:
+- **Sensitive Data Redaction**: Automatic regex-based redaction of API keys and tokens
+- **Body Size Control**: Configurable max size (default 100KB), truncates with flag
+- **Streaming Support**: Accumulates chunks (max 1000 chunks or 1MB) and logs complete response
+- **Performance**: Uses existing async logging, ~1-2μs write latency
+
+**Query Examples**:
+```bash
+# Get all events for a request
+grep "uuid-123" logs/requests.$(date +%Y-%m-%d) | jq .
+
+# Get request bodies
+grep "request_body" logs/requests.$(date +%Y-%m-%d) | jq '.fields.body'
+
+# Get response bodies
+grep "response_body" logs/requests.$(date +%Y-%m-%d) | jq '.fields.body'
+
+# Analyze routing performance
+grep "route_model" logs/requests.$(date +%Y-%m-%d) | jq '.fields.duration_ms'
+```
+
 #### 7. Token Tracking (Enhanced in v0.4.0)
 
 **Files**: `src/streaming.rs`, `src/handlers/*`
