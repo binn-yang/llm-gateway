@@ -136,6 +136,30 @@ oauth_provider = "anthropic"
 - **Web UI**:Vue 3 前端管理 API 密钥、路由规则、提供商实例
 - **API 端点**:`/api/config/*`(CRUD 操作)
 
+#### 8. 定价与成本计算系统 (`src/pricing/*`)
+**核心组件**:
+- **PricingService** (`service.rs`): 定价数据缓存服务,从数据库加载并缓存模型定价
+- **CostCalculator** (`calculator.rs`): 成本计算器,支持 input/output/cache tokens 的成本计算
+- **PricingUpdater** (`updater.rs`): 自动更新器,每小时从远程源同步定价数据
+- **PricingLoader** (`loader.rs`): 定价数据加载器,支持远程 JSON 和数据库加载
+
+**工作流程**:
+1. 服务启动时同步加载定价数据到缓存(确保首次请求即可计算成本)
+2. 后台任务每小时检查远程定价数据更新
+3. RequestLogger 在记录请求时自动计算成本
+4. 流式响应在 token 提取完成后重新计算成本(修复了初始成本为 0 的问题)
+
+**成本计算**:
+- Input tokens: `input_tokens × input_price / 1,000,000`
+- Output tokens: `output_tokens × output_price / 1,000,000`
+- Cache write: `cache_creation_tokens × cache_write_price / 1,000,000`
+- Cache read: `cache_read_tokens × cache_read_price / 1,000,000`
+
+**数据库表**:
+- `model_prices`: 存储模型定价数据(input/output/cache 价格)
+- `pricing_metadata`: 存储定价数据元信息(版本、更新时间、哈希)
+- `requests`: 新增成本字段(input_cost, output_cost, cache_write_cost, cache_read_cost, total_cost)
+
 ### Handlers (`src/handlers/`)
 
 **API 端点**:
@@ -390,3 +414,34 @@ pub fn is_instance_failure(error: &AppError) -> bool {
 - ❌ 不要求每次上游 API 更改都更新网关
 
 这就是为什么对只透传的字段优先使用 `serde_json::Value`。
+
+## 故障排查
+
+### 成本计算为 0 的问题
+
+**症状**: 数据库中的请求记录显示 `total_cost = 0.0`,即使有 token 使用数据。
+
+**根本原因**: 流式响应的时序竞争问题
+1. 流式请求开始时,`RequestEvent` 的所有 token 字段都是 0
+2. `log_request()` 立即被调用,基于 0 token 计算成本 → $0.00
+3. Token 数据稍后从 `message_delta` 事件提取并更新到数据库
+4. 但成本不会重新计算,仍然保持 $0.00
+
+**解决方案** (已在 v0.5.0 修复):
+- `update_tokens()` 方法现在会重新计算成本
+- 使用真实的 token 数据进行成本计算
+- 同时更新 token 和成本字段到数据库
+
+**验证方法**:
+```bash
+# 发送流式请求
+curl -X POST http://localhost:8080/v1/messages \
+  -H "Authorization: Bearer YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"hi"}],"max_tokens":50,"stream":true}'
+
+# 检查成本数据
+sqlite3 data/observability.db "SELECT model, input_tokens, output_tokens, total_cost FROM requests ORDER BY timestamp DESC LIMIT 1;"
+```
+
+**预期结果**: `total_cost` 应该大于 0,且与 token 数量成正比。

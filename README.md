@@ -19,9 +19,14 @@ A high-performance LLM proxy gateway written in Rust that provides multiple API 
 - **SQLite-based Observability**:
   - Complete request logging with token usage tracking
   - Anthropic prompt caching metrics (cache creation/read tokens)
+  - **Automatic Cost Calculation** (NEW):
+    - Real-time cost tracking for all requests (streaming and non-streaming)
+    - Supports input/output/cache tokens cost breakdown
+    - Hourly pricing data updates from remote source
+    - Per-request cost stored in database for analytics
   - Automatic data retention policies (7-30 days)
   - Non-blocking async batch writes
-  - **Provider Quota Monitoring** (NEW):
+  - **Provider Quota Monitoring**:
     - Automatic quota refresh for Anthropic OAuth instances
     - Real-time quota status via CLI stats command
     - Supports 5-hour, 7-day, and 7-day (Sonnet) usage windows
@@ -590,6 +595,7 @@ All requests are logged to SQLite database (`./data/observability.db`) with comp
 - Basic info: request_id, timestamp, api_key_name, provider, instance, model, endpoint
 - Token usage: input_tokens, output_tokens, total_tokens
 - **Caching metrics**: cache_creation_input_tokens, cache_read_input_tokens (Anthropic only)
+- **Cost breakdown**: input_cost, output_cost, cache_write_cost, cache_read_cost, total_cost
 - Performance: duration_ms, status, error_type, error_message
 
 **Provider Quota Monitoring** (NEW):
@@ -669,6 +675,18 @@ SELECT provider, model,
 FROM requests
 WHERE date >= date('now', '-7 days')
 GROUP BY provider, model;
+
+-- Cost analysis by model (last 7 days)
+SELECT model,
+       COUNT(*) as request_count,
+       SUM(input_tokens) as total_input_tokens,
+       SUM(output_tokens) as total_output_tokens,
+       ROUND(SUM(total_cost), 4) as total_cost_usd,
+       ROUND(AVG(total_cost), 6) as avg_cost_per_request
+FROM requests
+WHERE date >= date('now', '-7 days')
+GROUP BY model
+ORDER BY total_cost_usd DESC;
 
 -- Slowest requests (p99 latency)
 SELECT request_id, model, duration_ms, timestamp
