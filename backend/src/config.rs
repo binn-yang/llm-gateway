@@ -278,6 +278,10 @@ pub struct ObservabilityConfig {
     /// Body logging configuration (request/response bodies)
     #[serde(default)]
     pub body_logging: BodyLoggingConfig,
+
+    /// Quota refresh configuration
+    #[serde(default)]
+    pub quota_refresh: QuotaRefreshConfig,
 }
 
 impl Default for ObservabilityConfig {
@@ -289,6 +293,7 @@ impl Default for ObservabilityConfig {
             retention: ObservabilityRetentionConfig::default(),
             metrics_snapshot: MetricsSnapshotConfig::default(),
             body_logging: BodyLoggingConfig::default(),
+            quota_refresh: QuotaRefreshConfig::default(),
         }
     }
 }
@@ -415,6 +420,37 @@ pub struct RedactPattern {
     pub replacement: String,
 }
 
+/// Quota refresh configuration for provider instances
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct QuotaRefreshConfig {
+    /// Enable quota refresh (default: true)
+    #[serde(default = "default_quota_enabled")]
+    pub enabled: bool,
+
+    /// Refresh interval in seconds (default: 600 = 10 minutes)
+    #[serde(default = "default_quota_interval")]
+    pub interval_seconds: u64,
+
+    /// Timeout for individual instance queries in seconds (default: 30)
+    #[serde(default = "default_quota_timeout")]
+    pub timeout_seconds: u64,
+
+    /// Retention days for quota snapshots (default: 7)
+    #[serde(default = "default_quota_retention")]
+    pub retention_days: i64,
+}
+
+impl Default for QuotaRefreshConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_quota_enabled(),
+            interval_seconds: default_quota_interval(),
+            timeout_seconds: default_quota_timeout(),
+            retention_days: default_quota_retention(),
+        }
+    }
+}
+
 // Default value functions for observability config
 fn default_database_path() -> String {
     "./data/observability.db".to_string()
@@ -487,6 +523,22 @@ fn default_redact_patterns() -> Vec<RedactPattern> {
 
 fn default_simple_mode() -> bool {
     false
+}
+
+fn default_quota_enabled() -> bool {
+    true
+}
+
+fn default_quota_interval() -> u64 {
+    600 // 10 minutes
+}
+
+fn default_quota_timeout() -> u64 {
+    30
+}
+
+fn default_quota_retention() -> i64 {
+    7
 }
 
 pub fn load_config() -> anyhow::Result<Config> {

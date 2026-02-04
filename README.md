@@ -21,6 +21,10 @@ A high-performance LLM proxy gateway written in Rust that provides multiple API 
   - Anthropic prompt caching metrics (cache creation/read tokens)
   - Automatic data retention policies (7-30 days)
   - Non-blocking async batch writes
+  - **Provider Quota Monitoring** (NEW):
+    - Automatic quota refresh for Anthropic OAuth instances
+    - Real-time quota status via CLI stats command
+    - Supports 5-hour, 7-day, and 7-day (Sonnet) usage windows
 - **Web Dashboard** (NEW):
   - Real-time token usage charts and analytics
   - Provider instance health monitoring
@@ -308,6 +312,16 @@ base_url = "https://api.anthropic.com/v1"
 timeout_seconds = 300
 api_version = "2023-06-01"
 
+# Or use OAuth authentication (enables quota monitoring)
+[[providers.anthropic]]
+name = "anthropic-oauth"
+enabled = true
+auth_mode = "oauth"
+oauth_provider = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+timeout_seconds = 300
+api_version = "2023-06-01"
+
 [providers.gemini]
 enabled = true
 api_key = "your-gemini-key"
@@ -469,6 +483,55 @@ export ANTHROPIC_API_KEY="sk-gateway-001"
 # Claude Code will use /v1/messages endpoint with native Anthropic format
 ```
 
+### CLI Commands
+
+The gateway provides several CLI commands for management and monitoring:
+
+```bash
+# Start the server
+./target/release/llm-gateway start
+
+# Start as daemon (background process)
+./target/release/llm-gateway start --daemon
+
+# Stop the daemon
+./target/release/llm-gateway stop
+
+# Reload configuration (hot reload without restart)
+./target/release/llm-gateway reload
+
+# View system statistics and quota status
+./target/release/llm-gateway stats [--hours HOURS] [--detailed]
+
+# OAuth management
+./target/release/llm-gateway oauth login <provider>
+./target/release/llm-gateway oauth status <provider>
+./target/release/llm-gateway oauth refresh <provider>
+./target/release/llm-gateway oauth logout <provider>
+
+# Test configuration
+./target/release/llm-gateway test
+
+# Show version
+./target/release/llm-gateway version
+```
+
+**Stats Command Examples**:
+
+```bash
+# View statistics for last 24 hours
+./target/release/llm-gateway stats
+
+# View statistics for last 7 days with detailed output
+./target/release/llm-gateway stats --hours 168 --detailed
+```
+
+**Stats Output Includes**:
+- System Summary: API keys, providers, healthy instances
+- Token Usage: Per-model breakdown with cache metrics
+- Quota Status: Provider instance quota utilization (OAuth only)
+- Database Stats: Request counts, uptime, active keys
+
 ### Direct API Calls
 
 **Option 1: OpenAI-compatible API** (works with all providers)
@@ -529,6 +592,73 @@ All requests are logged to SQLite database (`./data/observability.db`) with comp
 - **Caching metrics**: cache_creation_input_tokens, cache_read_input_tokens (Anthropic only)
 - Performance: duration_ms, status, error_type, error_message
 
+**Provider Quota Monitoring** (NEW):
+
+The gateway automatically monitors token quotas for provider instances:
+
+**Supported Providers**:
+- ✅ **Anthropic (OAuth mode only)**: Supports quota queries via Anthropic's OAuth usage API
+- ❌ **Anthropic (Bearer mode)**: Not supported (no public API available)
+- ❌ **OpenAI**: Not supported (no public API available)
+- ❌ **Gemini**: Not supported (no public API available)
+
+**Why OAuth Only?**
+
+Anthropic provides a dedicated usage API endpoint (`https://api.anthropic.com/api/oauth/usage`) that requires:
+- OAuth Bearer token authentication
+- Special beta header: `anthropic-beta: oauth-2025-04-20`
+
+**Bearer mode limitation**: API Key authentication does not have access to quota query APIs. To monitor quotas for Anthropic, you must use OAuth authentication mode.
+
+**Quota Data Collected** (Anthropic OAuth):
+- 5-hour usage window utilization
+- 7-day usage window utilization
+- 7-day Sonnet-specific usage window utilization
+- Reset timestamps for each window
+
+**Automatic Refresh**:
+- Background task queries provider APIs every 10 minutes (configurable)
+- Quota snapshots stored in SQLite database
+- Automatic cleanup of old snapshots (7-day retention)
+
+**View Quota Status**:
+
+```bash
+# View current quota status for all provider instances
+./target/release/llm-gateway stats
+```
+
+**Example Output**:
+```
+Quota Status:
+╔══════════╦═══════════════════╦═══════════╦════════╦════════════════════════════════════╦═════════════╗
+║ PROVIDER ║ INSTANCE          ║ AUTH MODE ║ STATUS ║ QUOTA INFO                         ║ LAST UPDATE ║
+╠══════════╬═══════════════════╬═══════════╬════════╬════════════════════════════════════╬═════════════╣
+║ anthropic║ anthropic-oauth   ║ oauth     ║ ✓ OK   ║ 5h: 35.0% | 7d: 42.0% | 7d(s): 50% ║ 2m ago      ║
+║ anthropic║ anthropic-key     ║ bearer    ║ - N/A  ║ -                                  ║ 5m ago      ║
+╚══════════╩═══════════════════╩═══════════╩════════╩════════════════════════════════════╩═════════════╝
+```
+
+**Status Codes**:
+- ✓ OK: Quota data successfully retrieved
+- ✗ ERROR: Failed to query quota (check logs for details)
+- - N/A: Quota monitoring not available (bearer mode or unsupported provider)
+
+**Configuration**:
+
+```toml
+[observability]
+enabled = true
+database_path = "./data/observability.db"
+
+# Quota refresh configuration
+[observability.quota_refresh]
+enabled = true              # Enable/disable quota monitoring
+interval_seconds = 600      # Refresh interval (default: 10 minutes)
+timeout_seconds = 30        # Query timeout (default: 30 seconds)
+retention_days = 7          # Data retention (default: 7 days)
+```
+
 **Query Examples**:
 ```sql
 -- Token usage by provider (last 7 days)
@@ -554,17 +684,30 @@ SELECT
     ROUND(100.0 * SUM(cache_read_input_tokens) / SUM(input_tokens), 2) as cache_hit_rate
 FROM requests
 WHERE provider = 'anthropic' AND date >= date('now', '-1 day');
+
+-- Latest quota snapshots
+SELECT provider, instance, auth_mode, status,
+       datetime(timestamp/1000, 'unixepoch') as updated_at
+FROM quota_snapshots
+WHERE (provider, instance, timestamp) IN (
+    SELECT provider, instance, MAX(timestamp)
+    FROM quota_snapshots
+    GROUP BY provider, instance
+)
+ORDER BY provider, instance;
 ```
 
 **Data Retention**:
 - Request logs: 7 days (configurable)
 - Trace spans: 7 days
+- Quota snapshots: 7 days (configurable)
 - Automatic cleanup runs daily at 3 AM
 
 All metrics are stored in SQLite and accessible via:
 - **Web Dashboard**: Real-time charts at `http://localhost:8080/`
 - **SQL Queries**: Direct database access for custom analytics
 - **REST API**: Dashboard API endpoints for programmatic access
+- **CLI Stats**: `./target/release/llm-gateway stats` for system overview
 
 ## Feature Matrix
 
@@ -581,6 +724,7 @@ The gateway supports comprehensive multimodal features across all providers:
 | **JSON Mode** | ✅ | ✅ ⚠️ | ✅ | ⚠️ = System prompt injection workaround |
 | **JSON Schema** | ✅ | ✅ ⚠️ | ✅ | ⚠️ = System prompt injection workaround |
 | **Conversion Warnings** | N/A | ✅ | ✅ | X-LLM-Gateway-Warnings header |
+| **Quota Monitoring (OAuth)** | ❌ | ✅ | ❌ | Anthropic OAuth only |
 
 **Legend:**
 - ✅ = Full native or converted support
@@ -880,6 +1024,13 @@ max_buffer_size = 10000       # Ring buffer size
 logs_days = 7                     # Keep request logs for 7 days
 spans_days = 7                    # Keep trace spans for 7 days
 cleanup_hour = 3                  # Run cleanup at 3 AM daily (0-23)
+
+# Quota refresh configuration (Anthropic OAuth only)
+[observability.quota_refresh]
+enabled = true              # Enable quota monitoring
+interval_seconds = 600      # Refresh interval (default: 10 minutes)
+timeout_seconds = 30        # Query timeout (default: 30 seconds)
+retention_days = 7          # Data retention (default: 7 days)
 ```
 
 ### Environment Variables
@@ -892,9 +1043,180 @@ export LLM_GATEWAY__PROVIDERS__OPENAI__API_KEY="sk-new-key"
 export LLM_GATEWAY__OBSERVABILITY__ENABLED=true
 ```
 
+### OAuth Authentication
+
+The gateway supports OAuth 2.0 authentication for provider instances, particularly useful for Anthropic Claude.
+
+**Why Use OAuth?**
+- Enables quota monitoring for Anthropic instances
+- Automatic token refresh in the background
+- More secure than storing API keys directly
+- Required for accessing Anthropic's usage API
+
+**Configuration**:
+
+```toml
+# OAuth provider configuration
+[[oauth_providers]]
+name = "anthropic"
+client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+auth_url = "https://claude.ai/oauth/authorize"
+token_url = "https://console.anthropic.com/v1/oauth/token"
+redirect_uri = "https://platform.claude.com/oauth/code/callback"
+scopes = ["org:create_api_key", "user:profile", "user:inference", "user:sessions:claude_code"]
+
+# Provider instance using OAuth
+[[providers.anthropic]]
+name = "anthropic-oauth"
+enabled = true
+auth_mode = "oauth"
+oauth_provider = "anthropic"
+base_url = "https://api.anthropic.com/v1"
+timeout_seconds = 300
+api_version = "2023-06-01"
+
+# Provider instance using API Key (no quota monitoring)
+[[providers.anthropic]]
+name = "anthropic-key"
+enabled = true
+auth_mode = "bearer"
+api_key = "sk-ant-your-key"
+base_url = "https://api.anthropic.com/v1"
+timeout_seconds = 300
+api_version = "2023-06-01"
+```
+
+**OAuth Management**:
+
+```bash
+# Login (initiates OAuth flow in browser)
+./target/release/llm-gateway oauth login anthropic
+
+# Check OAuth status
+./target/release/llm-gateway oauth status anthropic
+
+# Refresh token manually
+./target/release/llm-gateway oauth refresh anthropic
+
+# Logout
+./target/release/llm-gateway oauth logout anthropic
+```
+
+**Token Storage**:
+- Encrypted storage in `~/.llm-gateway/oauth_tokens.json`
+- Automatic refresh 5 minutes before expiration
+- Background refresh task runs every 5 minutes
+
+### Authentication Modes Comparison
+
+| Feature | Bearer (API Key) | OAuth |
+|---------|:----------------:|:-----:|
+| **Configuration** | Simple API key | OAuth flow required |
+| **Token Storage** | Plaintext in config | Encrypted in ~/.llm-gateway/ |
+| **Token Refresh** | Manual | Automatic (5 min before expiry) |
+| **Quota Monitoring** | ❌ Not available | ✅ Available (Anthropic only) |
+| **Setup Complexity** | Low | Medium |
+| **Use Case** | Testing, quick start | Production, monitoring |
+| **Security** | API key in file | Encrypted, auto-refreshed |
+| **Anthropic Usage API** | ❌ No access | ✅ Full access |
+
+**Recommendation**:
+- **Development/Testing**: Use Bearer mode for simplicity
+- **Production**: Use OAuth mode for automatic quota monitoring and better security
+- **Hybrid**: Run both OAuth and Bearer instances for redundancy
+
+**Example Hybrid Configuration**:
+
+```toml
+# Primary instance: OAuth (enables quota monitoring)
+[[providers.anthropic]]
+name = "anthropic-primary"
+enabled = true
+auth_mode = "oauth"
+oauth_provider = "anthropic"
+priority = 1
+
+# Backup instance: Bearer (fallback)
+[[providers.anthropic]]
+name = "anthropic-backup"
+enabled = true
+auth_mode = "bearer"
+api_key = "sk-ant-backup-key"
+priority = 2
+```
+
+In this setup:
+- Normal traffic uses OAuth instance (with quota monitoring)
+- If OAuth fails, automatically fails over to Bearer instance
+- `llm-gateway stats` shows quota info for primary, N/A for backup
+
+```bash
+export LLM_GATEWAY__SERVER__PORT=9000
+export LLM_GATEWAY__PROVIDERS__OPENAI__API_KEY="sk-new-key"
+export LLM_GATEWAY__OBSERVABILITY__ENABLED=true
+```
+
 ## License
 
 MIT
+
+## FAQ
+
+### Quota Monitoring
+
+**Q: Why is quota monitoring only available for Anthropic OAuth?**
+
+A: Anthropic provides a dedicated usage API endpoint (`https://api.anthropic.com/api/oauth/usage`) that requires OAuth authentication. The API Key (bearer) authentication mode does not have access to quota query APIs. This is a limitation of Anthropic's API design, not the gateway.
+
+**Q: Can I use both OAuth and Bearer instances together?**
+
+A: Yes! You can configure multiple Anthropic instances with different authentication modes. The gateway will automatically route traffic between them based on priority and health. Only OAuth instances will show quota information in the stats output.
+
+**Q: How often is quota data refreshed?**
+
+A: By default, quota data is refreshed every 10 minutes. You can adjust this in the configuration:
+
+```toml
+[observability.quota_refresh]
+interval_seconds = 600  # 10 minutes (default)
+```
+
+**Q: What happens if quota query fails?**
+
+A: The gateway gracefully handles quota query failures:
+- Failed queries are logged but don't affect traffic routing
+- Status shows "✗ ERROR" in the stats output
+- Next refresh cycle will attempt to query again
+- Provider instances continue to serve requests normally
+
+**Q: Can I monitor quotas for OpenAI or Gemini?**
+
+A: Currently, only Anthropic OAuth supports quota monitoring. OpenAI and Gemini do not provide public APIs for quota queries. If these providers add such APIs in the future, the gateway's modular architecture makes it easy to add support.
+
+**Q: How accurate is the quota data?**
+
+A: The quota data comes directly from Anthropic's usage API and reflects real-time usage across all applications using your OAuth credentials. The data includes:
+- Utilization percentage (0-100%)
+- Reset timestamps for each usage window
+- Separate tracking for general usage and Sonnet-specific usage
+
+**Q: Will bearer mode instances ever support quota monitoring?**
+
+A: Only if Anthropic releases a quota query API for API Key authentication. The gateway is designed to be extensible, so if such an API becomes available, we can add support for it.
+
+**Q: How can I set up alerts for quota limits?**
+
+A: While the gateway doesn't have built-in alerting, you can:
+1. Run `llm-gateway stats` periodically in a cron job
+2. Query the SQLite database directly
+3. Use the Dashboard API endpoints (`/api/instances/current-health`)
+4. Parse the output and send alerts when utilization exceeds a threshold
+
+Example cron job:
+```bash
+# Check quota every hour and alert if >80%
+0 * * * * /path/to/llm-gateway stats | grep -q "5h: 8[0-9]\." && echo "High quota usage!" | mail -s "Alert" admin@example.com
+```
 
 ## Architecture Details
 

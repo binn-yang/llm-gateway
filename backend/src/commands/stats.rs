@@ -35,6 +35,9 @@ pub async fn execute(hours: u32, detailed: bool) -> Result<()> {
     // Display token usage statistics
     display_token_usage(&cfg, hours, detailed).await?;
 
+    // Display quota status
+    display_quota_status(&cfg).await?;
+
     Ok(())
 }
 
@@ -296,5 +299,131 @@ fn truncate_model_name(name: &str) -> String {
         format!("{}...", &name[..MAX_LEN - 3])
     } else {
         name.to_string()
+    }
+}
+
+/// Display quota status for all provider instances
+async fn display_quota_status(cfg: &config::Config) -> Result<()> {
+    if !cfg.observability.enabled {
+        println!("\nQuota Status: Not available (observability disabled)");
+        return Ok(());
+    }
+
+    let pool = match connect_to_database(cfg).await {
+        Ok(pool) => pool,
+        Err(e) => {
+            println!("\nQuota Status: Not available ({})", e);
+            return Ok(());
+        }
+    };
+
+    // Use the quota database module
+    let quota_db = llm_gateway::quota::db::QuotaDatabase::new(pool);
+
+    let snapshots = match quota_db.get_latest_snapshots().await {
+        Ok(s) => s,
+        Err(e) => {
+            println!("\nQuota Status: Not available ({})", e);
+            return Ok(());
+        }
+    };
+
+    if snapshots.is_empty() {
+        println!("\nQuota Status: No data available (waiting for first refresh)");
+        return Ok(());
+    }
+
+    println!("\nQuota Status:");
+
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .set_content_arrangement(ContentArrangement::Dynamic);
+
+    table.set_header(vec![
+        Cell::new("PROVIDER").fg(Color::Cyan),
+        Cell::new("INSTANCE").fg(Color::Cyan),
+        Cell::new("AUTH MODE").fg(Color::Cyan),
+        Cell::new("STATUS").fg(Color::Cyan),
+        Cell::new("QUOTA INFO").fg(Color::Cyan),
+        Cell::new("LAST UPDATE").fg(Color::Cyan),
+    ]);
+
+    for snapshot in &snapshots {
+        let status_cell = match snapshot.status.as_str() {
+            "success" => Cell::new("✓ OK").fg(Color::Green),
+            "error" => Cell::new("✗ ERROR").fg(Color::Red),
+            "unavailable" => Cell::new("- N/A").fg(Color::DarkGrey),
+            _ => Cell::new(&snapshot.status),
+        };
+
+        let quota_info = format_quota_info(&snapshot.quota_data, &snapshot.status)?;
+        let last_update = format_time_ago(snapshot.timestamp);
+
+        table.add_row(vec![
+            Cell::new(&snapshot.provider),
+            Cell::new(&snapshot.instance),
+            Cell::new(&snapshot.auth_mode),
+            status_cell,
+            Cell::new(quota_info),
+            Cell::new(last_update),
+        ]);
+    }
+
+    println!("{}", table);
+    Ok(())
+}
+
+/// Format quota info based on provider type
+fn format_quota_info(quota_data: &str, status: &str) -> Result<String> {
+    if status != "success" {
+        return Ok("-".to_string());
+    }
+
+    let data: serde_json::Value = serde_json::from_str(quota_data)?;
+
+    match data["type"].as_str() {
+        Some("anthropic_oauth") => {
+            let five_h = data["windows"]["five_hour"]["utilization"]
+                .as_f64()
+                .unwrap_or(0.0);
+            let seven_d = data["windows"]["seven_day"]["utilization"]
+                .as_f64()
+                .unwrap_or(0.0);
+            let seven_d_sonnet = data["windows"]["seven_day_sonnet"]["utilization"]
+                .as_f64()
+                .unwrap_or(0.0);
+
+            Ok(format!(
+                "5h: {:.1}% | 7d: {:.1}% | 7d(s): {:.1}%",
+                five_h * 100.0,
+                seven_d * 100.0,
+                seven_d_sonnet * 100.0
+            ))
+        }
+        Some("gemini_antigravity") => {
+            let percentage = data["overall"]["percentage"]
+                .as_f64()
+                .unwrap_or(0.0);
+            Ok(format!("Used: {:.1}%", percentage))
+        }
+        _ => Ok("Unknown format".to_string()),
+    }
+}
+
+/// Format timestamp as time ago
+fn format_time_ago(timestamp_ms: i64) -> String {
+    let now = Utc::now().timestamp_millis();
+    let diff_ms = now - timestamp_ms;
+    let diff_secs = diff_ms / 1000;
+
+    if diff_secs < 60 {
+        format!("{}s ago", diff_secs)
+    } else if diff_secs < 3600 {
+        format!("{}m ago", diff_secs / 60)
+    } else if diff_secs < 86400 {
+        format!("{}h ago", diff_secs / 3600)
+    } else {
+        format!("{}d ago", diff_secs / 86400)
     }
 }

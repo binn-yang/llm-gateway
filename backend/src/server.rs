@@ -12,6 +12,7 @@ use crate::{
     handlers,
     load_balancer::{LoadBalancer, ProviderInstance, ProviderInstanceConfigEnum},
     observability::RequestLogger,
+    quota::QuotaRefresher,
     router::{ModelRouter, Provider},
     signals::setup_signal_handlers,
 };
@@ -32,7 +33,7 @@ pub async fn start_server(config: Config) -> Result<()> {
     cleanup_old_logs(7);
 
     // Initialize observability (SQLite-based request logger)
-    let (_db_pool, request_logger) = if config.observability.enabled {
+    let (db_pool, request_logger) = if config.observability.enabled {
         tracing::info!(
             database = %config.observability.database_path,
             "Initializing observability database"
@@ -127,6 +128,33 @@ pub async fn start_server(config: Config) -> Result<()> {
         tracing::debug!("No OAuth providers configured, skipping OAuth initialization");
         (None, None)
     };
+
+    // Start quota refresh background task if observability is enabled
+    if config.observability.enabled && config.observability.quota_refresh.enabled {
+        if let (Some(pool), Some(token_store)) = (db_pool.clone(), token_store.clone()) {
+            let quota_db = crate::quota::db::QuotaDatabase::new(pool);
+            let refresher = QuotaRefresher::new(quota_db, &config, token_store);
+            let _quota_task = refresher.spawn(Arc::new(config.clone()));
+            tracing::info!(
+                "配额刷新任务已启动 (间隔: {} 秒)",
+                config.observability.quota_refresh.interval_seconds
+            );
+        } else {
+            tracing::warn!("配额刷新任务未启动: 需要数据库和 OAuth 支持");
+        }
+    }
+
+    // Start data cleanup task if observability is enabled
+    if config.observability.enabled {
+        if let Some(pool) = db_pool.clone() {
+            let _cleanup_task = crate::observability::cleanup::start_cleanup_task(
+                pool,
+                config.observability.clone(),
+            );
+            tracing::info!("数据清理任务已启动 (每天 {} 点执行)",
+                config.observability.retention.cleanup_hour);
+        }
+    }
 
     // Create shared state
     let router = Arc::new(ModelRouter::new(config_swap.clone()));

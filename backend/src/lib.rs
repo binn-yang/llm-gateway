@@ -11,6 +11,7 @@ pub mod models;
 pub mod oauth;
 pub mod observability;
 pub mod providers;
+pub mod quota;
 pub mod retry;
 pub mod router;
 pub mod server;
