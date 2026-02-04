@@ -1,6 +1,7 @@
 use sqlx::SqlitePool;
 use tokio::sync::mpsc;
 use std::sync::Arc;
+use crate::pricing::CostCalculator;
 
 /// Request event to be written to database
 #[derive(Debug, Clone)]
@@ -23,6 +24,11 @@ pub struct RequestEvent {
     pub cache_creation_input_tokens: i64,
     pub cache_read_input_tokens: i64,
     pub duration_ms: i64,
+    pub input_cost: f64,
+    pub output_cost: f64,
+    pub cache_write_cost: f64,
+    pub cache_read_cost: f64,
+    pub total_cost: f64,
 }
 
 /// Async request logger with channel-based writes
@@ -33,6 +39,7 @@ pub struct RequestEvent {
 pub struct RequestLogger {
     tx: mpsc::Sender<RequestEvent>,
     pool: Arc<SqlitePool>,
+    cost_calculator: Option<Arc<CostCalculator>>,
 }
 
 impl RequestLogger {
@@ -46,7 +53,7 @@ impl RequestLogger {
     /// - Channel send: ~1μs (non-blocking)
     /// - Background writer: 1000 req/s throughput
     /// - Backpressure: Blocks if buffer is full
-    pub fn new(pool: SqlitePool, buffer_size: usize) -> Self {
+    pub fn new(pool: SqlitePool, buffer_size: usize, cost_calculator: Option<Arc<CostCalculator>>) -> Self {
         let (tx, mut rx) = mpsc::channel::<RequestEvent>(buffer_size);
         let pool = Arc::new(pool);
         let pool_clone = pool.clone();
@@ -64,11 +71,37 @@ impl RequestLogger {
             }
         });
 
-        Self { tx, pool }
+        Self { tx, pool, cost_calculator }
     }
 
     /// Log a request (non-blocking, sends to channel)
-    pub async fn log_request(&self, event: RequestEvent) {
+    pub async fn log_request(&self, mut event: RequestEvent) {
+        // Calculate cost if calculator is available
+        if let Some(calculator) = &self.cost_calculator {
+            match calculator.calculate_cost(
+                &event.model,
+                event.input_tokens,
+                event.output_tokens,
+                event.cache_creation_input_tokens,
+                event.cache_read_input_tokens,
+            ).await {
+                Ok(breakdown) => {
+                    event.input_cost = breakdown.input_cost;
+                    event.output_cost = breakdown.output_cost;
+                    event.cache_write_cost = breakdown.cache_write_cost;
+                    event.cache_read_cost = breakdown.cache_read_cost;
+                    event.total_cost = breakdown.total_cost;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        model = %event.model,
+                        error = %e,
+                        "Failed to calculate cost, using zero"
+                    );
+                }
+            }
+        }
+
         if let Err(e) = self.tx.send(event).await {
             tracing::error!(error = %e, "Failed to send request to logger channel");
         }
@@ -83,8 +116,8 @@ impl RequestLogger {
                 model, endpoint, status, error_type, error_message,
                 input_tokens, output_tokens, total_tokens,
                 cache_creation_input_tokens, cache_read_input_tokens,
-                duration_ms
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                duration_ms, input_cost, output_cost, cache_write_cost, cache_read_cost, total_cost
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
             "#
         )
         .bind(&event.request_id)
@@ -105,6 +138,11 @@ impl RequestLogger {
         .bind(event.cache_creation_input_tokens)
         .bind(event.cache_read_input_tokens)
         .bind(event.duration_ms)
+        .bind(event.input_cost)
+        .bind(event.output_cost)
+        .bind(event.cache_write_cost)
+        .bind(event.cache_read_cost)
+        .bind(event.total_cost)
         .execute(pool)
         .await?;
 
@@ -115,6 +153,7 @@ impl RequestLogger {
     pub async fn update_tokens(
         &self,
         request_id: &str,
+        model: &str,
         input_tokens: i64,
         output_tokens: i64,
         total_tokens: i64,
@@ -122,18 +161,56 @@ impl RequestLogger {
         cache_read_input_tokens: i64,
     ) {
         let request_id = request_id.to_string();
+        let model = model.to_string();
         let pool = self.pool.clone();
+        let cost_calculator = self.cost_calculator.clone();
 
         // Spawn a background task to update the database
         tokio::spawn(async move {
+            // Calculate cost with the actual token counts
+            let (input_cost, output_cost, cache_write_cost, cache_read_cost, total_cost) =
+                if let Some(calculator) = &cost_calculator {
+                    match calculator.calculate_cost(
+                        &model,
+                        input_tokens,
+                        output_tokens,
+                        cache_creation_input_tokens,
+                        cache_read_input_tokens,
+                    ).await {
+                        Ok(breakdown) => (
+                            breakdown.input_cost,
+                            breakdown.output_cost,
+                            breakdown.cache_write_cost,
+                            breakdown.cache_read_cost,
+                            breakdown.total_cost,
+                        ),
+                        Err(e) => {
+                            tracing::warn!(
+                                model = %model,
+                                error = %e,
+                                "Failed to calculate cost during token update, using zero"
+                            );
+                            (0.0, 0.0, 0.0, 0.0, 0.0)
+                        }
+                    }
+                } else {
+                    (0.0, 0.0, 0.0, 0.0, 0.0)
+                };
+
+            // Update both tokens and costs
             if let Err(e) = sqlx::query(
-                "UPDATE requests SET input_tokens = ?1, output_tokens = ?2, total_tokens = ?3, cache_creation_input_tokens = ?4, cache_read_input_tokens = ?5 WHERE request_id = ?6"
+                "UPDATE requests SET input_tokens = ?1, output_tokens = ?2, total_tokens = ?3, cache_creation_input_tokens = ?4, cache_read_input_tokens = ?5, input_cost = ?6, output_cost = ?7, cache_write_cost = ?8, cache_read_cost = ?9, total_cost = ?10 WHERE request_id = ?11"
             )
             .bind(input_tokens)
             .bind(output_tokens)
             .bind(total_tokens)
             .bind(cache_creation_input_tokens)
             .bind(cache_read_input_tokens)
+            .bind(input_cost)
+            .bind(output_cost)
+            .bind(cache_write_cost)
+            .bind(cache_read_cost)
+            .bind(total_cost)
             .bind(&request_id)
             .execute(&*pool)
             .await
@@ -141,7 +218,7 @@ impl RequestLogger {
                 tracing::error!(
                     request_id = %request_id,
                     error = %e,
-                    "Failed to update token counts in database"
+                    "Failed to update token counts and costs in database"
                 );
             }
         });
@@ -173,6 +250,11 @@ mod tests {
             cache_creation_input_tokens: 0,
             cache_read_input_tokens: 0,
             duration_ms: 1234,
+            input_cost: 0.0,
+            output_cost: 0.0,
+            cache_write_cost: 0.0,
+            cache_read_cost: 0.0,
+            total_cost: 0.0,
         };
 
         assert_eq!(event.request_id, "test-123");

@@ -266,6 +266,11 @@ pub async fn handle_messages(
                 cache_creation_input_tokens: 0,
                 cache_read_input_tokens: 0,
                 duration_ms,
+                input_cost: 0.0,
+                output_cost: 0.0,
+                cache_write_cost: 0.0,
+                cache_read_cost: 0.0,
+                total_cost: 0.0,
             };
             logger.log_request(event).await;
         }
@@ -277,6 +282,7 @@ pub async fn handle_messages(
         // Spawn background task to update tokens when stream completes
         if let Some(logger) = state.request_logger.clone() {
             let request_id_owned = request_id.clone();
+            let model_owned = model.clone();
             let tracker_clone = tracker.clone();
             let config = state.config.load().clone();
             let span_clone = span.clone();
@@ -285,6 +291,7 @@ pub async fn handle_messages(
                 if let Some((input, output, cache_creation, cache_read)) = tracker_clone.wait_for_completion().await {
                     logger.update_tokens(
                         &request_id_owned,
+                        &model_owned,
                         input as i64,
                         output as i64,
                         (input + output) as i64,
@@ -404,10 +411,17 @@ pub async fn handle_messages(
                 error_message: None,
                 input_tokens: body.usage.input_tokens as i64,
                 output_tokens: body.usage.output_tokens as i64,
-                total_tokens: (body.usage.input_tokens + body.usage.output_tokens) as i64,
+                total_tokens: (body.usage.input_tokens + body.usage.output_tokens +
+                              body.usage.cache_creation_input_tokens.unwrap_or(0) +
+                              body.usage.cache_read_input_tokens.unwrap_or(0)) as i64,
                 cache_creation_input_tokens: body.usage.cache_creation_input_tokens.unwrap_or(0) as i64,
                 cache_read_input_tokens: body.usage.cache_read_input_tokens.unwrap_or(0) as i64,
                 duration_ms,
+                input_cost: 0.0,
+                output_cost: 0.0,
+                cache_write_cost: 0.0,
+                cache_read_cost: 0.0,
+                total_cost: 0.0,
             };
             logger.log_request(event).await;
         }

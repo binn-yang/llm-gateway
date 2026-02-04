@@ -12,6 +12,7 @@ use crate::{
     handlers,
     load_balancer::{LoadBalancer, ProviderInstance, ProviderInstanceConfigEnum},
     observability::RequestLogger,
+    pricing::{CostCalculator, PricingService, PricingUpdater},
     quota::QuotaRefresher,
     router::{ModelRouter, Provider},
     signals::setup_signal_handlers,
@@ -62,9 +63,55 @@ pub async fn start_server(config: Config) -> Result<()> {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to run migrations: {}", e))?;
 
-        // Create request logger with async channel (10k buffer)
-        let logger = Arc::new(RequestLogger::new(pool.clone(), 10000));
-        tracing::info!("Request logger initialized with 10000 event buffer");
+        // Initialize pricing service
+        tracing::info!("Initializing pricing service...");
+        let pricing_service = Arc::new(PricingService::new(pool.clone()));
+
+        // Create pricing updater
+        let pricing_updater = Arc::new(PricingUpdater::new(
+            pricing_service.clone(),
+            pool.clone(),
+            "https://raw.githubusercontent.com/Wei-Shaw/claude-relay-service/price-mirror/model_prices_and_context_window.json".to_string(),
+            "backend/pricing/backups".to_string(),
+            std::time::Duration::from_secs(3600), // Update every hour
+        ));
+
+        // Perform initial pricing update synchronously to ensure data is available
+        tracing::info!("Performing initial pricing data update...");
+        match pricing_updater.check_and_update().await {
+            Ok(true) => tracing::info!("Pricing data updated from remote source"),
+            Ok(false) => {
+                tracing::info!("Pricing data unchanged from remote, loading from database");
+                // Data unchanged but still need to load cache from database
+                if let Err(e) = pricing_service.load_cache().await {
+                    tracing::error!("Failed to load pricing cache from database: {}", e);
+                } else {
+                    tracing::info!("Pricing cache loaded successfully from database");
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Initial pricing update from remote failed: {}, loading from database", e);
+                // Try to load from database as fallback
+                if let Err(e) = pricing_service.load_cache().await {
+                    tracing::error!("Failed to load pricing cache from database: {}", e);
+                } else {
+                    tracing::info!("Pricing cache loaded successfully from database (fallback)");
+                }
+            }
+        }
+
+        // Create cost calculator
+        let cost_calculator = Arc::new(CostCalculator::new(pricing_service.clone()));
+
+        // Start pricing updater background task for periodic updates
+        tokio::spawn(async move {
+            pricing_updater.start_background_task().await;
+        });
+        tracing::info!("Pricing updater started (checks every hour)");
+
+        // Create request logger with async channel (10k buffer) and cost calculator
+        let logger = Arc::new(RequestLogger::new(pool.clone(), 10000, Some(cost_calculator)));
+        tracing::info!("Request logger initialized with 10000 event buffer and cost calculation");
 
         (Some(pool), Some(logger))
     } else {

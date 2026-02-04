@@ -264,6 +264,11 @@ async fn handle_openai_request(
                 cache_creation_input_tokens: 0,
                 cache_read_input_tokens: 0,
                 duration_ms,
+                input_cost: 0.0,
+                output_cost: 0.0,
+                cache_write_cost: 0.0,
+                cache_read_cost: 0.0,
+                total_cost: 0.0,
             };
             logger.log_request(event).await;
         }
@@ -275,6 +280,7 @@ async fn handle_openai_request(
         // Spawn background task to update tokens when stream completes
         if let Some(logger) = state.request_logger.clone() {
             let request_id_owned = request_id.to_string();
+            let model_owned = model.to_string();
             let tracker_clone = tracker.clone();
             let config = state.config.load().clone();
             let span_clone = span.clone();
@@ -283,6 +289,7 @@ async fn handle_openai_request(
                 if let Some((input, output, cache_creation, cache_read)) = tracker_clone.wait_for_completion().await {
                     logger.update_tokens(
                         &request_id_owned,
+                        &model_owned,
                         input as i64,
                         output as i64,
                         (input + output) as i64,
@@ -414,6 +421,11 @@ async fn handle_openai_request(
                 cache_creation_input_tokens: 0,
                 cache_read_input_tokens: 0,
                 duration_ms,
+                input_cost: 0.0,
+                output_cost: 0.0,
+                cache_write_cost: 0.0,
+                cache_read_cost: 0.0,
+                total_cost: 0.0,
             };
             logger.log_request(event).await;
         }
@@ -566,6 +578,11 @@ async fn handle_anthropic_request(
                 cache_creation_input_tokens: 0,
                 cache_read_input_tokens: 0,
                 duration_ms,
+                input_cost: 0.0,
+                output_cost: 0.0,
+                cache_write_cost: 0.0,
+                cache_read_cost: 0.0,
+                total_cost: 0.0,
             };
             logger.log_request(event).await;
         }
@@ -585,11 +602,13 @@ async fn handle_anthropic_request(
         // Spawn background task to update tokens when stream completes
         if let Some(logger) = state.request_logger.clone() {
             let request_id_owned = request_id.to_string();
+            let model_owned = model.to_string();
             tokio::spawn(async move {
                 // Wait for tracker to notify completion (no polling/sleeping!)
                 if let Some((input, output, cache_creation, cache_read)) = tracker.wait_for_completion().await {
                     logger.update_tokens(
                         &request_id_owned,
+                        &model_owned,
                         input as i64,
                         output as i64,
                         (input + output) as i64,
@@ -621,18 +640,14 @@ async fn handle_anthropic_request(
         let openai_body = converters::anthropic_response::convert_response(&anthropic_body)?;
 
         // Extract usage from OpenAI format (for compatibility)
-        let (input_tokens, output_tokens, total_tokens) = match &openai_body.usage {
-            Some(usage) => (
-                usage.prompt_tokens as i64,
-                usage.completion_tokens as i64,
-                (usage.prompt_tokens + usage.completion_tokens) as i64,
-            ),
-            None => (0, 0, 0),
-        };
+        let input_tokens = openai_body.usage.as_ref().map(|u| u.prompt_tokens as i64).unwrap_or(0);
+        let output_tokens = openai_body.usage.as_ref().map(|u| u.completion_tokens as i64).unwrap_or(0);
 
         // Extract cache tokens from original Anthropic response
         let cache_creation_tokens = anthropic_body.usage.cache_creation_input_tokens.unwrap_or(0) as i64;
         let cache_read_tokens = anthropic_body.usage.cache_read_input_tokens.unwrap_or(0) as i64;
+
+        let total_tokens = input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens;
 
         // Log request event
         if let Some(logger) = &state.request_logger {
@@ -662,6 +677,11 @@ async fn handle_anthropic_request(
                 cache_creation_input_tokens: cache_creation_tokens,
                 cache_read_input_tokens: cache_read_tokens,
                 duration_ms,
+                input_cost: 0.0,
+                output_cost: 0.0,
+                cache_write_cost: 0.0,
+                cache_read_cost: 0.0,
+                total_cost: 0.0,
             };
             logger.log_request(event).await;
         }
@@ -823,6 +843,11 @@ async fn handle_gemini_request(
                 cache_creation_input_tokens: 0,
                 cache_read_input_tokens: 0,
                 duration_ms,
+                input_cost: 0.0,
+                output_cost: 0.0,
+                cache_write_cost: 0.0,
+                cache_read_cost: 0.0,
+                total_cost: 0.0,
             };
             logger.log_request(event).await;
         }
@@ -842,11 +867,13 @@ async fn handle_gemini_request(
         // Spawn background task to update tokens when stream completes
         if let Some(logger) = state.request_logger.clone() {
             let request_id_owned = request_id.to_string();
+            let model_owned = model.to_string();
             tokio::spawn(async move {
                 // Wait for tracker to notify completion (no polling/sleeping!)
                 if let Some((input, output, cache_creation, cache_read)) = tracker.wait_for_completion().await {
                     logger.update_tokens(
                         &request_id_owned,
+                        &model_owned,
                         input as i64,
                         output as i64,
                         (input + output) as i64,
@@ -877,15 +904,18 @@ async fn handle_gemini_request(
         // Convert back to OpenAI format
         let openai_body = converters::gemini_response::convert_response(&gemini_body)?;
 
-        // Extract usage
-        let (input_tokens, output_tokens, total_tokens) = match &openai_body.usage {
+        // Extract usage (Gemini doesn't have cache tokens yet)
+        let (input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens) = match &openai_body.usage {
             Some(usage) => (
                 usage.prompt_tokens as i64,
                 usage.completion_tokens as i64,
-                (usage.prompt_tokens + usage.completion_tokens) as i64,
+                0i64,
+                0i64,
             ),
-            None => (0, 0, 0),
+            None => (0, 0, 0, 0),
         };
+
+        let total_tokens = input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens;
 
         // Log request event
         if let Some(logger) = &state.request_logger {
@@ -912,9 +942,14 @@ async fn handle_gemini_request(
                 input_tokens,
                 output_tokens,
                 total_tokens,
-                cache_creation_input_tokens: 0,
-                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: cache_creation_tokens,
+                cache_read_input_tokens: cache_read_tokens,
                 duration_ms,
+                input_cost: 0.0,
+                output_cost: 0.0,
+                cache_write_cost: 0.0,
+                cache_read_cost: 0.0,
+                total_cost: 0.0,
             };
             logger.log_request(event).await;
         }

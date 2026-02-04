@@ -10,6 +10,7 @@ pub mod logging;
 pub mod models;
 pub mod oauth;
 pub mod observability;
+pub mod pricing;
 pub mod providers;
 pub mod quota;
 pub mod retry;
