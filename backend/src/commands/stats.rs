@@ -17,6 +17,19 @@ struct TokenUsageRow {
     output_tokens: i64,
     cache_creation_tokens: i64,
     cache_read_tokens: i64,
+    input_cost: f64,
+    output_cost: f64,
+    cache_write_cost: f64,
+    cache_read_cost: f64,
+    total_cost: f64,
+}
+
+/// API key cost statistics row from database
+#[derive(Debug, FromRow)]
+struct ApiKeyCostRow {
+    api_key_name: String,
+    requests: i64,
+    total_cost: f64,
 }
 
 /// Execute the stats command
@@ -153,7 +166,7 @@ async fn display_database_stats(pool: &SqlitePool, hours: u32) -> Result<()> {
 }
 
 /// Display token usage statistics table
-async fn display_token_usage(cfg: &config::Config, hours: u32, _detailed: bool) -> Result<()> {
+async fn display_token_usage(cfg: &config::Config, hours: u32, detailed: bool) -> Result<()> {
     if !cfg.observability.enabled {
         println!("Token Usage: Not available (observability disabled)");
         return Ok(());
@@ -181,11 +194,16 @@ async fn display_token_usage(cfg: &config::Config, hours: u32, _detailed: bool) 
             COALESCE(SUM(input_tokens), 0) as input_tokens,
             COALESCE(SUM(output_tokens), 0) as output_tokens,
             COALESCE(SUM(cache_creation_input_tokens), 0) as cache_creation_tokens,
-            COALESCE(SUM(cache_read_input_tokens), 0) as cache_read_tokens
+            COALESCE(SUM(cache_read_input_tokens), 0) as cache_read_tokens,
+            COALESCE(SUM(input_cost), 0.0) as input_cost,
+            COALESCE(SUM(output_cost), 0.0) as output_cost,
+            COALESCE(SUM(cache_write_cost), 0.0) as cache_write_cost,
+            COALESCE(SUM(cache_read_cost), 0.0) as cache_read_cost,
+            COALESCE(SUM(total_cost), 0.0) as total_cost
          FROM requests
          WHERE timestamp >= ?
          GROUP BY provider, instance, model
-         ORDER BY total_tokens DESC"
+         ORDER BY total_cost DESC"
     )
     .bind(cutoff_timestamp)
     .fetch_all(&pool)
@@ -196,8 +214,9 @@ async fn display_token_usage(cfg: &config::Config, hours: u32, _detailed: bool) 
         return Ok(());
     }
 
-    // Calculate total tokens for percentage
+    // Calculate total tokens and cost for percentage
     let total_all_tokens: i64 = stats.iter().map(|s| s.total_tokens).sum();
+    let total_all_cost: f64 = stats.iter().map(|s| s.total_cost).sum();
 
     // Create table
     println!("Token Usage (Last {} Hours):", hours);
@@ -212,18 +231,30 @@ async fn display_token_usage(cfg: &config::Config, hours: u32, _detailed: bool) 
         Cell::new("INSTANCE").fg(Color::Cyan),
         Cell::new("MODEL").fg(Color::Cyan),
         Cell::new("REQUESTS").fg(Color::Cyan),
-        Cell::new("TOTAL TOKENS").fg(Color::Cyan),
         Cell::new("INPUT").fg(Color::Cyan),
         Cell::new("OUTPUT").fg(Color::Cyan),
         Cell::new("CACHE CREATE").fg(Color::Cyan),
         Cell::new("CACHE READ").fg(Color::Cyan),
-        Cell::new("PERCENTAGE").fg(Color::Cyan),
+        Cell::new("TOTAL TOKENS").fg(Color::Cyan),
+        Cell::new("TOKEN PERCENTAGE").fg(Color::Cyan),
+        Cell::new("IN COST").fg(Color::Cyan),
+        Cell::new("OUT COST").fg(Color::Cyan),
+        Cell::new("CACHE W").fg(Color::Cyan),
+        Cell::new("CACHE R").fg(Color::Cyan),
+        Cell::new("TOTAL COST").fg(Color::Cyan),
+        Cell::new("COST PERCENTAGE").fg(Color::Cyan),
     ]);
 
     // Add rows
     for stat in &stats {
-        let percentage = if total_all_tokens > 0 {
+        let token_percentage = if total_all_tokens > 0 {
             (stat.total_tokens as f64 / total_all_tokens as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let cost_percentage = if total_all_cost > 0.0 {
+            (stat.total_cost / total_all_cost) * 100.0
         } else {
             0.0
         };
@@ -233,12 +264,18 @@ async fn display_token_usage(cfg: &config::Config, hours: u32, _detailed: bool) 
             Cell::new(&stat.instance),
             Cell::new(truncate_model_name(&stat.model)),
             Cell::new(format_number(stat.requests)),
-            Cell::new(format_number(stat.total_tokens)),
             Cell::new(format_number(stat.input_tokens)),
             Cell::new(format_number(stat.output_tokens)),
             Cell::new(format_number(stat.cache_creation_tokens)),
             Cell::new(format_number(stat.cache_read_tokens)),
-            Cell::new(format!("{:.1}%", percentage)),
+            Cell::new(format_number(stat.total_tokens)),
+            Cell::new(format!("{:.1}%", token_percentage)),
+            Cell::new(format!("${:.6}", stat.input_cost)),
+            Cell::new(format!("${:.6}", stat.output_cost)),
+            Cell::new(format!("${:.6}", stat.cache_write_cost)),
+            Cell::new(format!("${:.6}", stat.cache_read_cost)),
+            Cell::new(format!("${:.6}", stat.total_cost)),
+            Cell::new(format!("{:.1}%", cost_percentage)),
         ]);
     }
 
@@ -246,11 +283,92 @@ async fn display_token_usage(cfg: &config::Config, hours: u32, _detailed: bool) 
 
     // Print summary
     let total_requests: i64 = stats.iter().map(|s| s.requests).sum();
+    let total_cost: f64 = stats.iter().map(|s| s.total_cost).sum();
     println!(
-        "\nTotal: {} requests, {} tokens",
+        "\nTotal: {} requests, {} tokens, ${:.6}",
         format_number(total_requests),
-        format_number(total_all_tokens)
+        format_number(total_all_tokens),
+        total_cost
     );
+
+    // Display detailed API key statistics if requested
+    if detailed {
+        display_api_key_costs(&pool, hours).await?;
+    }
+
+    Ok(())
+}
+
+/// Display cost breakdown by API key (detailed mode)
+async fn display_api_key_costs(pool: &SqlitePool, hours: u32) -> Result<()> {
+    println!("\nCost by API Key (Last {} Hours):", hours);
+
+    // Calculate cutoff timestamp
+    let cutoff_timestamp = Utc::now().timestamp_millis() - (hours as i64 * 3600 * 1000);
+
+    // Query API key statistics
+    let api_key_stats = sqlx::query_as::<_, ApiKeyCostRow>(
+        "SELECT
+            api_key_name,
+            COUNT(*) as requests,
+            COALESCE(SUM(total_cost), 0.0) as total_cost
+         FROM requests
+         WHERE timestamp >= ?
+         GROUP BY api_key_name
+         ORDER BY total_cost DESC"
+    )
+    .bind(cutoff_timestamp)
+    .fetch_all(pool)
+    .await?;
+
+    if api_key_stats.is_empty() {
+        println!("  No data available");
+        return Ok(());
+    }
+
+    // Create table
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .set_content_arrangement(ContentArrangement::Dynamic);
+
+    table.set_header(vec![
+        Cell::new("API KEY").fg(Color::Cyan),
+        Cell::new("REQUESTS").fg(Color::Cyan),
+        Cell::new("TOTAL COST").fg(Color::Cyan),
+        Cell::new("TOP MODEL").fg(Color::Cyan),
+        Cell::new("TOP MODEL COST").fg(Color::Cyan),
+    ]);
+
+    // For each API key, find the top model by cost
+    for api_key_stat in &api_key_stats {
+        let top_model_result = sqlx::query_as::<_, (String, f64)>(
+            "SELECT
+                model as top_model,
+                COALESCE(SUM(total_cost), 0.0) as top_model_cost
+             FROM requests
+             WHERE timestamp >= ? AND api_key_name = ?
+             GROUP BY model
+             ORDER BY top_model_cost DESC
+             LIMIT 1"
+        )
+        .bind(cutoff_timestamp)
+        .bind(&api_key_stat.api_key_name)
+        .fetch_optional(pool)
+        .await?;
+
+        let (top_model, top_model_cost) = top_model_result.unwrap_or(("N/A".to_string(), 0.0));
+
+        table.add_row(vec![
+            Cell::new(&api_key_stat.api_key_name),
+            Cell::new(format_number(api_key_stat.requests)),
+            Cell::new(format!("${:.6}", api_key_stat.total_cost)),
+            Cell::new(truncate_model_name(&top_model)),
+            Cell::new(format!("${:.6}", top_model_cost)),
+        ]);
+    }
+
+    println!("{}", table);
 
     Ok(())
 }
