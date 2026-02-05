@@ -1,7 +1,7 @@
 use crate::{
     auth::AuthInfo,
     error::AppError,
-    models::anthropic::{MessageContent, MessagesRequest, MessagesResponse},
+    models::anthropic::{MessagesRequest, MessagesResponse},
     observability::RequestEvent,
     providers,
     retry::RequestStatus,
@@ -129,31 +129,13 @@ pub async fn handle_messages(
         "Routing span completed"
     );
 
-    // 2. 清理 assistant 消息中的 thinking 字段
-    // Anthropic API 的不对称设计：响应中的 thinking 格式 ≠ 请求中的 thinking 格式
-    // 当 Claude Code 将之前的响应作为历史发送时，需要清理不符合请求格式的 thinking
-    let mut anthropic_request = request;
-    for message in &mut anthropic_request.messages {
-        if message.role == "assistant" {
-            if let MessageContent::Blocks(ref mut blocks) = &mut message.content {
-                for block in blocks.iter_mut() {
-                    // 检查 thinking 字段是否存在且格式不正确
-                    if let Some(thinking) = &block.thinking {
-                        // 如果 thinking 是对象但缺少 signature 字段，删除它
-                        if let Some(obj) = thinking.as_object() {
-                            if !obj.contains_key("signature") {
-                                tracing::debug!(
-                                    thinking_content = ?obj.get("thinking"),
-                                    "Removing thinking field without signature from assistant message"
-                                );
-                                block.thinking = None;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // 2. 原样转发请求，不做任何 thinking 字段清理
+    // 理由：
+    // 1. Anthropic 官方 API 内部有容错机制，会自动处理无效的 thinking signature
+    // 2. 与 claude-relay-service 的最佳实践保持一致（纯代理模式不修改业务数据）
+    // 3. 代理网关的职责是路由和转发，而非验证和修改业务数据
+    // 4. 第三方 API 的偶发错误由客户端重试机制处理（Claude Code 已验证有效）
+    let anthropic_request = request;
 
     // 4. Get LoadBalancer for Anthropic provider
     let load_balancers_map = state.load_balancers.load();
