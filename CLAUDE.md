@@ -13,6 +13,16 @@ LLM Gateway 是一个高性能 Rust 代理服务,为多个 LLM 提供商提供�
 **版本**: 0.5.0
 **技术栈**: Rust + Axum + Tokio + SQLite (后端) + Vue 3 + TypeScript + Chart.js (前端)
 
+## 最新更新 (v0.5.0)
+
+### Provider 故障切换优化
+- ✅ **智能错误分类**: 401/403/429/503 特殊处理,不同错误类型采取不同策略
+- ✅ **熔断器模式**: 3 次失败触发熔断,半开状态测试恢复,2 次成功关闭
+- ✅ **自适应恢复**: 指数退避(60s → 600s) + Jitter,替代固定 60 秒
+- ✅ **自动重试**: 429 延迟重试,503 立即重试,实例故障自动切换
+- ✅ **健康状态可视化**: stats 命令显示实时健康状态,failover_events 表记录事件
+- ✅ **零配置**: 硬编码合理默认值,无需修改配置文件
+
 ## 基本命令
 
 ### 构建和运行
@@ -68,11 +78,33 @@ cargo test                          # 运行测试
 
 ### 核心组件
 
-#### 1. 负载均衡系统 (`src/load_balancer.rs`, `src/retry.rs`)
+#### 1. 负载均衡与故障切换系统 (`src/load_balancer.rs`, `src/retry.rs`, `src/error.rs`)
 - **粘性会话**: 每个 API 密钥绑定到特定实例 1 小时(最大化提供商侧 KV 缓存命中)
 - **优先级选择**: 数字越小优先级越高,相同优先级随机选择
-- **健康管理**: 单次失败(5xx/超时/连接错误)标记不健康,60秒后自动恢复
-- **渐进恢复**: 实例恢复后,用户保持在备份实例直到会话过期(防抖动)
+- **智能错误分类** (v0.5.0+):
+  - 401/403 认证错误 → 标记实例故障(配置问题)
+  - 429 Rate Limit → 延迟重试,自动切换实例
+  - 503 Service Unavailable → 立即重试其他实例(瞬时过载)
+  - 500/502/504 → 标记实例故障
+  - 4xx 业务错误 → 直接返回,不触发故障转移
+- **熔断器模式** (v0.5.0+):
+  - 3 次失败(60秒窗口)触发熔断器打开
+  - 半开状态测试恢复(健康检测通过后)
+  - 2 次成功请求关闭熔断器
+  - 状态机: Closed → Open → HalfOpen → Closed
+- **自适应恢复**:
+  - 指数退避: 60s → 120s → 240s → 480s → 600s (最大)
+  - ±20% Jitter 防止惊群效应
+  - 主动健康检测替代被动等待
+- **自动重试**:
+  - 最大重试 3 次防止无限循环
+  - 429 延迟 retry_after 秒后重试
+  - 瞬时错误立即重试不同实例
+  - 实例故障自动切换到备份实例
+- **可观测性**:
+  - failover_events 表记录所有故障转移事件
+  - stats 命令显示实时健康状态(✅ 健康 / 🟡 恢复中 / 🔴 不健康)
+  - 非阻塞事件记录(tokio::spawn)
 
 #### 2. 模型路由 (`src/router.rs`)
 使用前缀匹配:
@@ -383,19 +415,50 @@ providers::anthropic::create_message(&client, config, request).await
 
 区分网关错误和上游错误(`src/retry.rs`):
 ```rust
-pub fn is_instance_failure(error: &AppError) -> bool {
+pub fn classify_error(error: &AppError) -> FailureType {
     match error {
-        // 网关/网络问题 - 触发故障转移
-        AppError::HttpClientError(_) => true,
-        AppError::UpstreamError { status, .. } if status.is_server_error() => true,
+        // 401/403 认证错误 - 配置问题,标记实例故障
+        AppError::UpstreamError { status, .. } if matches!(status.as_u16(), 401 | 403) => {
+            FailureType::InstanceFailure
+        }
 
-        // 业务/验证错误 - 不触发故障转移
-        AppError::ConversionError(_) => false,  // 客户端发送错误数据
-        AppError::UpstreamError { status, .. } if status.is_client_error() => false,
+        // 429 Rate Limit - 延迟重试
+        AppError::RateLimitError { retry_after, .. } => FailureType::RateLimit {
+            retry_after_secs: retry_after.unwrap_or(2),
+        },
 
-        _ => false,
+        // 503 Service Unavailable - 瞬时过载,立即重试
+        AppError::UpstreamError { status, .. } if status.as_u16() == 503 => {
+            FailureType::Transient
+        }
+
+        // 500/502/504 - 实例故障
+        AppError::UpstreamError { status, .. } if matches!(status.as_u16(), 500 | 502 | 504) => {
+            FailureType::InstanceFailure
+        }
+
+        // 业务错误 - 不触发故障转移
+        _ => FailureType::BusinessError,
     }
 }
+```
+
+**故障转移策略**:
+- ✅ 实例故障(5xx/连接/超时) → 标记不健康 + 自动切换
+- ✅ 认证错误(401/403) → 标记不健康(配置问题)
+- ✅ Rate Limit(429) → 延迟 retry_after 秒 + 切换实例
+- ✅ 瞬时错误(503) → 立即重试不同实例(不标记不健康)
+- ✅ 业务错误(4xx) → 直接返回给客户端
+
+**熔断器配置**(硬编码默认值):
+```rust
+const FAILURE_THRESHOLD: u32 = 3;           // 3 次失败触发熔断
+const FAILURE_WINDOW_SECS: u64 = 60;        // 60 秒窗口
+const SUCCESS_THRESHOLD: u32 = 2;           // 2 次成功关闭熔断器
+const INITIAL_BACKOFF_SECS: u64 = 60;       // 初始退避 60 秒
+const MAX_BACKOFF_SECS: u64 = 600;          // 最大退避 10 分钟
+const BACKOFF_MULTIPLIER: f64 = 2.0;        // 指数倍增
+const JITTER_RATIO: f64 = 0.2;              // ±20% 抖动
 ```
 
 ### 常见错误

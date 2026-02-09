@@ -3,6 +3,7 @@
 A high-performance LLM proxy gateway written in Rust that provides multiple API formats for LLM providers (OpenAI, Anthropic Claude, Google Gemini):
 - **Unified OpenAI-compatible API** (`/v1/chat/completions`) - works with all providers via automatic protocol conversion
 - **Native Anthropic Messages API** (`/v1/messages`) - direct passthrough for Claude models without conversion overhead
+- **Advanced Failover System** (NEW) - Circuit breaker, exponential backoff, intelligent error classification
 - **SQLite-based Observability** - Complete request logging with token tracking and performance metrics
 - **Web Dashboard** - Real-time monitoring and analytics UI built with Vue 3
 
@@ -15,7 +16,13 @@ A high-performance LLM proxy gateway written in Rust that provides multiple API 
 - **Smart Routing**: Prefix-based model routing to appropriate providers
 - **Multi-Instance Load Balancing**: Each provider supports multiple backend instances with priority-based selection
 - **Sticky Sessions**: API key-level session affinity maximizes provider-side KV cache hits
-- **Automatic Failover**: Single request failure triggers instant failover with auto-recovery
+- **Advanced Failover System** (NEW in v0.5.0):
+  - **Circuit Breaker**: 3 failures trigger circuit open, half-open state for testing recovery
+  - **Intelligent Error Classification**: 401/403 auth errors, 429 rate limits, 503 transient errors handled differently
+  - **Exponential Backoff**: 60s → 120s → 240s → 480s → 600s with ±20% jitter
+  - **Automatic Retry**: Smart retry logic with max 3 attempts, different strategies per error type
+  - **Health Monitoring**: Real-time health status via `stats` command (✅ Healthy / 🟡 Recovering / 🔴 Unhealthy)
+  - **Event Logging**: failover_events table tracks all circuit breaker state transitions
 - **SQLite-based Observability**:
   - Complete request logging with token usage tracking
   - Anthropic prompt caching metrics (cache creation/read tokens)
@@ -153,15 +160,109 @@ priority = 2                    # Same priority → random among these two
 
 #### Health Detection Criteria
 
-An instance is marked **unhealthy** on **single request failure** of these types:
+An instance is marked **unhealthy** based on intelligent error classification:
 
-| Failure Type | Examples | Action |
-|--------------|----------|--------|
-| **5xx Server Errors** | 500, 502, 503, 504 | Mark unhealthy |
-| **Connection Failures** | TCP timeout, connection refused, DNS failure | Mark unhealthy |
-| **Request Timeouts** | Exceeds `timeout_seconds` | Mark unhealthy |
-| **4xx Client Errors** | 401, 403, 429 | **No action** (not instance fault) |
-| **Business Errors** | Invalid API key, rate limit | **No action** |
+| Failure Type | Examples | Action | Retry Strategy |
+|--------------|----------|--------|----------------|
+| **Authentication Errors** | 401, 403 | Mark unhealthy (config issue) | Switch to backup |
+| **Rate Limit** | 429 | Delay + retry | Wait retry_after seconds |
+| **Transient Errors** | 503 Service Unavailable | **No marking** | Immediate retry on different instance |
+| **Server Errors** | 500, 502, 504 | Mark unhealthy | Circuit breaker + failover |
+| **Connection Failures** | TCP timeout, DNS failure | Mark unhealthy | Circuit breaker + failover |
+| **Request Timeouts** | Exceeds timeout_seconds | Mark unhealthy | Circuit breaker + failover |
+| **Business Errors** | Invalid model, bad request | **No action** | Return to client |
+
+#### Circuit Breaker Pattern (NEW in v0.5.0)
+
+The gateway implements a sophisticated circuit breaker to prevent cascading failures:
+
+**Three States:**
+```
+Closed (Normal Operation)
+    ↓ (3 failures in 60s)
+Open (Blocking Requests)
+    ↓ (After backoff period)
+Half-Open (Testing Recovery)
+    ↓ (2 consecutive successes)
+Closed (Back to Normal)
+```
+
+**Configuration** (hardcoded defaults):
+- Failure threshold: 3 failures within 60 seconds
+- Success threshold: 2 consecutive successes to close circuit
+- Max retries per request: 3 attempts
+
+**Example Timeline:**
+```
+T+0s:    Request fails (1/3)
+         ⚠️ Failure recorded
+
+T+5s:    Request fails (2/3)
+         ⚠️ Failure recorded
+
+T+10s:   Request fails (3/3)
+         🔴 Circuit opens
+         → Requests blocked for 60s
+
+T+70s:   Health check passes
+         🟡 Circuit half-open
+         → Testing with real traffic
+
+T+75s:   Request succeeds (1/2)
+T+80s:   Request succeeds (2/2)
+         ✅ Circuit closed
+         → Normal operation resumed
+```
+
+#### Exponential Backoff Recovery
+
+Instead of fixed 60-second recovery, the gateway uses **exponential backoff with jitter**:
+
+| Attempt | Base Backoff | With ±20% Jitter | Max |
+|---------|--------------|------------------|-----|
+| 1st failure | 60s | 48-72s | - |
+| 2nd failure | 120s | 96-144s | - |
+| 3rd failure | 240s | 192-288s | - |
+| 4th failure | 480s | 384-576s | - |
+| 5th+ failure | 600s | 480-720s | 10 min cap |
+
+**Benefits:**
+- Prevents premature recovery attempts
+- Reduces load on failing instances
+- Jitter prevents thundering herd
+- Adaptive to failure duration
+
+#### Retry Logic by Error Type
+
+**Rate Limit (429):**
+```
+1. Parse retry_after header (default 2s)
+2. Mark instance unhealthy
+3. Wait retry_after seconds
+4. Retry with different instance
+5. Max 3 total attempts
+```
+
+**Transient Error (503):**
+```
+1. Do NOT mark instance unhealthy
+2. Immediately retry with different instance
+3. Max 3 total attempts
+```
+
+**Instance Failure (5xx, timeout):**
+```
+1. Mark instance unhealthy
+2. Trigger circuit breaker logic
+3. Immediately retry with backup instance
+4. Max 3 total attempts
+```
+
+**Business Error (4xx except 429):**
+```
+1. Do NOT retry
+2. Return error to client immediately
+```
 
 #### Auto-Recovery Mechanism
 
@@ -533,9 +634,21 @@ The gateway provides several CLI commands for management and monitoring:
 
 **Stats Output Includes**:
 - System Summary: API keys, providers, healthy instances
+- **Provider Health Status** (NEW): Real-time circuit breaker state and failure counts
 - Token Usage: Per-model breakdown with cache metrics
 - Quota Status: Provider instance quota utilization (OAuth only)
 - Database Stats: Request counts, uptime, active keys
+
+**Example Stats Output:**
+```
+Provider Health Status:
+  openai-primary                 ✅ Healthy      (0 failures)
+  anthropic-primary              🟡 Recovering   (testing recovery, retry in 45s)
+  anthropic-backup               ✅ Healthy      (0 failures)
+  gemini-main                    🔴 Unhealthy    (5 failures, retry in 8m)
+
+Overall: 2/4 healthy, 1 recovering, 1 down
+```
 
 ### Direct API Calls
 
@@ -597,6 +710,41 @@ All requests are logged to SQLite database (`./data/observability.db`) with comp
 - **Caching metrics**: cache_creation_input_tokens, cache_read_input_tokens (Anthropic only)
 - **Cost breakdown**: input_cost, output_cost, cache_write_cost, cache_read_cost, total_cost
 - Performance: duration_ms, status, error_type, error_message
+
+**Failover Event Tracking** (NEW in v0.5.0):
+
+The gateway tracks all circuit breaker events in the `failover_events` table:
+
+**Event Types:**
+- `failure` - Instance failure recorded
+- `circuit_open` - Circuit breaker opened (3 failures)
+- `circuit_half_open` - Testing recovery (health check passed)
+- `circuit_closed` - Circuit closed (2 successes)
+- `recovery` - Instance recovered
+
+**Query Examples:**
+```sql
+-- Recent failover events
+SELECT datetime(timestamp) as time,
+       provider, instance, event_type,
+       consecutive_failures, next_retry_secs
+FROM failover_events
+ORDER BY timestamp DESC
+LIMIT 20;
+
+-- Circuit breaker state by instance
+SELECT instance,
+       event_type,
+       consecutive_failures,
+       datetime(timestamp) as last_event
+FROM failover_events
+WHERE (provider, instance, timestamp) IN (
+    SELECT provider, instance, MAX(timestamp)
+    FROM failover_events
+    GROUP BY provider, instance
+)
+ORDER BY provider, instance;
+```
 
 **Provider Quota Monitoring** (NEW):
 
