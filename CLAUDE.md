@@ -36,14 +36,19 @@ cargo test                          # 运行测试
 
 ### OAuth 认证 (v0.5.0)
 ```bash
-# 登录(手动 URL 复制流程)
+# Anthropic OAuth 登录(手动 URL 复制流程)
 ./target/release/llm-gateway oauth login anthropic
 # 1. 浏览器打开授权页面
 # 2. 授权后手动复制完整的回调 URL
 # 3. 粘贴 URL 到 CLI 提示符
 
+# Gemini OAuth 登录 (gemini-cli / antigravity)
+./target/release/llm-gateway oauth login gemini-cli
+./target/release/llm-gateway oauth login antigravity
+
 # 查看状态
 ./target/release/llm-gateway oauth status anthropic
+./target/release/llm-gateway oauth status gemini-cli
 
 # 刷新/登出
 ./target/release/llm-gateway oauth refresh anthropic
@@ -139,6 +144,53 @@ scopes = ["org:create_api_key", "user:profile", "user:inference", "user:sessions
 name = "anthropic-oauth"
 auth_mode = "oauth"
 oauth_provider = "anthropic"
+# 无需 api_key
+```
+
+**Gemini OAuth 配置**(官方凭证):
+```toml
+# Gemini CLI OAuth Provider (gemini-cli 官方应用)
+[[oauth_providers]]
+name = "gemini-cli"
+# 官方 Gemini CLI 客户端 ID（从 gemini-cli 源码获取）
+client_id = "YOUR_GEMINI_CLI_CLIENT_ID"
+# 客户端密钥（Web 应用必需）
+client_secret = "YOUR_GEMINI_CLI_CLIENT_SECRET"
+# Google OAuth 授权端点
+auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
+# Google OAuth Token 端点
+token_url = "https://oauth2.googleapis.com/token"
+# 回调地址（gemini-cli 官方回调地址）
+redirect_uri = "https://codeassist.google.com/authcode"
+# 必需权限
+scopes = ["https://www.googleapis.com/auth/cloud-platform"]
+
+# Antigravity OAuth Provider (Antigravity 应用)
+[[oauth_providers]]
+name = "antigravity"
+# Antigravity 客户端 ID（从 antigravity 源码获取）
+client_id = "YOUR_ANTIGRAVITY_CLIENT_ID"
+# 客户端密钥（Web 应用必需）
+client_secret = "YOUR_ANTIGRAVITY_CLIENT_SECRET"
+# Google OAuth 授权端点
+auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
+# Google OAuth Token 端点
+token_url = "https://oauth2.googleapis.com/token"
+# 本地回调地址（需要用户手动复制 URL）
+redirect_uri = "http://localhost:45462"
+# 完整权限列表
+scopes = [
+  "https://www.googleapis.com/auth/cloud-platform",
+  "https://www.googleapis.com/auth/userinfo.email",
+  "https://www.googleapis.com/auth/userinfo.profile",
+  "https://www.googleapis.com/auth/cclog",
+  "https://www.googleapis.com/auth/experimentsandconfigs"
+]
+
+[[providers.gemini]]
+name = "gemini-oauth"
+auth_mode = "oauth"
+oauth_provider = "gemini-cli"
 # 无需 api_key
 ```
 

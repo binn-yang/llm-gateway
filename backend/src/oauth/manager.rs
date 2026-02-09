@@ -1,6 +1,6 @@
 use crate::config::OAuthProviderConfig;
 use crate::errors::AppError;
-use crate::oauth::providers::{AnthropicOAuthProvider, OAuthProvider};
+use crate::oauth::providers::{AnthropicOAuthProvider, GoogleOAuthProvider, OAuthProvider};
 use crate::oauth::token_store::TokenStore;
 use crate::oauth::types::OAuthToken;
 use chrono::Utc;
@@ -25,7 +25,17 @@ impl OAuthManager {
         let mut providers: HashMap<String, Box<dyn OAuthProvider>> = HashMap::new();
 
         for config in oauth_configs {
-            let provider: Box<dyn OAuthProvider> = Box::new(AnthropicOAuthProvider::new(config.clone()));
+            let provider: Box<dyn OAuthProvider> = match config.name.as_str() {
+                "anthropic" => Box::new(AnthropicOAuthProvider::new(config.clone())),
+                "gemini-cli" | "antigravity" => Box::new(GoogleOAuthProvider::new(config.clone())),
+                _ => {
+                    tracing::warn!(
+                        provider = %config.name,
+                        "Unknown OAuth provider, using default Google implementation"
+                    );
+                    Box::new(GoogleOAuthProvider::new(config.clone()))
+                }
+            };
             providers.insert(config.name.clone(), provider);
         }
 
