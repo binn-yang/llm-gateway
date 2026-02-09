@@ -82,10 +82,6 @@ pub enum OAuthCommands {
         /// Local callback server port
         #[arg(short, long, default_value = "54545")]
         port: u16,
-
-        /// Don't automatically open browser
-        #[arg(long)]
-        no_browser: bool,
     },
 
     /// Show OAuth token status

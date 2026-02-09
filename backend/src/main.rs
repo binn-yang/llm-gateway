@@ -55,8 +55,8 @@ async fn main() -> Result<()> {
         }
         cli::Commands::OAuth { action } => {
             match action {
-                cli::OAuthCommands::Login { provider, port, no_browser } => {
-                    commands::oauth::login(provider.clone(), port, no_browser).await?;
+                cli::OAuthCommands::Login { provider, port } => {
+                    commands::oauth::login(provider.clone(), port).await?;
                 }
                 cli::OAuthCommands::Status { provider, verbose } => {
                     commands::oauth::status(provider.clone(), verbose).await?;

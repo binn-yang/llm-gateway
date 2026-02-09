@@ -1,5 +1,6 @@
 use anyhow::Result;
 use colored::Colorize;
+use copypasta::{ClipboardContext, ClipboardProvider};
 use indicatif::{ProgressBar, ProgressStyle};
 use llm_gateway::{
     config::load_config,
@@ -14,8 +15,21 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::Arc;
 
+/// 尝试将 URL 复制到剪贴板
+fn try_copy_to_clipboard(url: &str) -> bool {
+    match ClipboardContext::new() {
+        Ok(mut ctx) => {
+            if let Ok(_) = ctx.set_contents(url.to_owned()) {
+                return true;
+            }
+        }
+        Err(_) => {}
+    }
+    false
+}
+
 /// Execute OAuth login command
-pub async fn login(provider: String, port: u16, no_browser: bool) -> Result<()> {
+pub async fn login(provider: String, port: u16) -> Result<()> {
     println!("{}", format!("🔐 OAuth Login - {}", provider).bold());
     println!();
 
@@ -55,8 +69,7 @@ pub async fn login(provider: String, port: u16, no_browser: bool) -> Result<()> 
         manual_callback_flow(
             provider,
             oauth_provider,
-            token_store,
-            no_browser
+            token_store
         ).await
     } else {
         // 使用本地 callback server 流程
@@ -64,8 +77,7 @@ pub async fn login(provider: String, port: u16, no_browser: bool) -> Result<()> 
             provider,
             oauth_provider,
             token_store,
-            port,
-            no_browser
+            port
         ).await
     }
 }
@@ -75,7 +87,6 @@ async fn manual_callback_flow(
     provider: String,
     oauth_provider: &Box<dyn llm_gateway::oauth::providers::traits::OAuthProvider>,
     token_store: Arc<TokenStore>,
-    no_browser: bool,
 ) -> Result<()> {
     println!("{} {}", "[1/3]".cyan().bold(), "Generating PKCE parameters...");
     let pkce_params = generate_pkce_params();
@@ -89,20 +100,22 @@ async fn manual_callback_flow(
         .get_authorization_url(&pkce_params.code_challenge, &pkce_params.state)
         .map_err(|e| anyhow::anyhow!("Failed to generate authorization URL: {}", e))?;
 
-    // Open browser
-    if !no_browser {
-        if let Err(e) = webbrowser::open(&auth_url) {
-            println!("  {} Failed to open browser: {}", "⚠".yellow(), e);
-            println!("  Please open this URL manually:");
-            println!();
-            println!("  {}", auth_url.cyan());
-        } else {
-            println!("  {} Browser opened for authorization", "✓".green());
-        }
+    // Display authorization URL (browser opening removed for better UX)
+    println!();
+    println!("{}", "━".repeat(80).bright_black());
+    println!("{}", "  Authorization URL".cyan().bold());
+    println!("{}", "━".repeat(80).bright_black());
+    println!();
+    println!("  Please open this URL in your browser:");
+    println!();
+    println!("  {}", auth_url.green().underline());
+    println!();
+
+    // Try to copy URL to clipboard
+    if try_copy_to_clipboard(&auth_url) {
+        println!("  {} URL copied to clipboard!", "✓".green());
     } else {
-        println!("  Please open this URL in your browser:");
-        println!();
-        println!("  {}", auth_url.cyan());
+        println!("  {} Could not auto-copy to clipboard", "ℹ".dimmed());
     }
     println!();
 
@@ -201,7 +214,6 @@ async fn local_callback_flow(
     oauth_provider: &Box<dyn llm_gateway::oauth::providers::traits::OAuthProvider>,
     token_store: Arc<TokenStore>,
     port: u16,
-    no_browser: bool,
 ) -> Result<()> {
     println!("{} {}", "[1/4]".cyan().bold(), "Starting local callback server...");
 
@@ -222,18 +234,22 @@ async fn local_callback_flow(
         .get_authorization_url(&pkce_params.code_challenge, &pkce_params.state)
         .map_err(|e| anyhow::anyhow!("Failed to generate authorization URL: {}", e))?;
 
-    // Open browser
-    if !no_browser {
-        if let Err(e) = webbrowser::open(&auth_url) {
-            println!("  {} Failed to open browser: {}", "⚠".yellow(), e);
-            println!("  Please open this URL manually:");
-            println!("  {}", auth_url);
-        } else {
-            println!("  {} Browser opened", "✓".green());
-        }
+    // Display authorization URL (browser opening removed for better UX)
+    println!();
+    println!("{}", "━".repeat(80).bright_black());
+    println!("{}", "  Authorization URL".cyan().bold());
+    println!("{}", "━".repeat(80).bright_black());
+    println!();
+    println!("  Please open this URL in your browser:");
+    println!();
+    println!("  {}", auth_url.green().underline());
+    println!();
+
+    // Try to copy URL to clipboard
+    if try_copy_to_clipboard(&auth_url) {
+        println!("  {} URL copied to clipboard!", "✓".green());
     } else {
-        println!("  Please open this URL in your browser:");
-        println!("  {}", auth_url);
+        println!("  {} Could not auto-copy to clipboard", "ℹ".dimmed());
     }
     println!();
 
