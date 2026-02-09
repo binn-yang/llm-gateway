@@ -80,9 +80,60 @@ struct HealthState {
     instances: HashMap<String, InstanceHealth>,
 }
 
+/// Circuit breaker state for instance health management
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CircuitState {
+    /// Circuit is closed - instance is working normally
+    Closed,
+    /// Circuit is open - instance is failing, do not accept requests
+    Open,
+    /// Circuit is half-open - testing if instance has recovered
+    HalfOpen,
+}
+
 struct InstanceHealth {
-    is_healthy: bool,                 // Whether instance is healthy
-    last_failure_time: Option<Instant>,  // Last failure time (for recovery)
+    is_healthy: bool,                        // Whether instance is healthy
+    last_failure_time: Option<Instant>,     // Last failure time (for recovery)
+    circuit_state: CircuitState,            // Circuit breaker state
+    consecutive_failures: u32,              // Consecutive failure count
+    consecutive_successes: u32,             // Consecutive success count (for half-open)
+    failure_window_start: Option<Instant>,  // Start of current failure window
+}
+
+// Circuit breaker constants (hardcoded defaults)
+const FAILURE_THRESHOLD: u32 = 3;           // 3 failures trigger circuit open
+const FAILURE_WINDOW_SECS: u64 = 60;        // 60 second failure window
+const SUCCESS_THRESHOLD: u32 = 2;           // 2 successes close circuit from half-open
+
+// Exponential backoff constants
+const INITIAL_BACKOFF_SECS: u64 = 60;       // Initial backoff 60 seconds
+const MAX_BACKOFF_SECS: u64 = 600;          // Maximum backoff 10 minutes
+const BACKOFF_MULTIPLIER: f64 = 2.0;        // Double each time
+const JITTER_RATIO: f64 = 0.2;              // ±20% jitter
+
+/// Calculate exponential backoff duration with jitter
+fn calculate_backoff(consecutive_failures: u32, base_timeout_secs: u64) -> Duration {
+    use rand::Rng;
+
+    // Start from initial backoff or configured timeout (whichever is larger)
+    let base = base_timeout_secs.max(INITIAL_BACKOFF_SECS);
+
+    // Calculate exponential backoff: base * (multiplier ^ (failures - threshold))
+    let exponent = consecutive_failures.saturating_sub(FAILURE_THRESHOLD);
+    let backoff_secs = if exponent == 0 {
+        base
+    } else {
+        let multiplied = (base as f64) * BACKOFF_MULTIPLIER.powi(exponent as i32);
+        multiplied.min(MAX_BACKOFF_SECS as f64) as u64
+    };
+
+    // Add jitter: ±20% random variation
+    let jitter_range = (backoff_secs as f64 * JITTER_RATIO) as u64;
+    let mut rng = rand::thread_rng();
+    let jitter = rng.gen_range(0..=jitter_range * 2);
+    let final_backoff = backoff_secs.saturating_sub(jitter_range).saturating_add(jitter);
+
+    Duration::from_secs(final_backoff.max(1)) // At least 1 second
 }
 
 #[derive(Clone)]
@@ -171,6 +222,10 @@ impl LoadBalancer {
                 InstanceHealth {
                     is_healthy: true,
                     last_failure_time: None,
+                    circuit_state: CircuitState::Closed,
+                    consecutive_failures: 0,
+                    consecutive_successes: 0,
+                    failure_window_start: None,
                 },
             );
         }
@@ -264,12 +319,14 @@ impl LoadBalancer {
     async fn select_healthy_instance_by_priority(&self) -> Option<ProviderInstance> {
         let health = self.health_state.read().await;
 
-        // Filter healthy and enabled instances
+        // Filter healthy and enabled instances (respect circuit breaker)
         let healthy_instances: Vec<_> = self.instances.iter()
             .filter(|inst| {
                 inst.config.enabled() &&
                 health.instances.get(inst.name.as_ref())
-                    .map_or(false, |h| h.is_healthy)
+                    .map_or(false, |h| {
+                        h.is_healthy && h.circuit_state != CircuitState::Open
+                    })
             })
             .collect();
 
@@ -339,6 +396,89 @@ impl LoadBalancer {
         }
     }
 
+    /// Record a successful request (for circuit breaker)
+    pub async fn record_success(&self, instance_name: &str) {
+        let mut health = self.health_state.write().await;
+        if let Some(h) = health.instances.get_mut(instance_name) {
+            h.consecutive_failures = 0;
+            h.consecutive_successes += 1;
+
+            // Half-open state: consecutive successes reach threshold → close circuit
+            if h.circuit_state == CircuitState::HalfOpen
+                && h.consecutive_successes >= SUCCESS_THRESHOLD
+            {
+                h.circuit_state = CircuitState::Closed;
+                h.is_healthy = true;
+                tracing::info!(
+                    instance = instance_name,
+                    "✅ Circuit closed after {} consecutive successes",
+                    h.consecutive_successes
+                );
+            }
+        }
+    }
+
+    /// Record an instance failure with circuit breaker logic
+    pub async fn record_failure(&self, instance_name: &str, failure_type: crate::retry::FailureType) {
+        let mut health = self.health_state.write().await;
+        if let Some(h) = health.instances.get_mut(instance_name) {
+            let now = Instant::now();
+
+            // Reset failure window if expired
+            if let Some(window_start) = h.failure_window_start {
+                if now.duration_since(window_start) > Duration::from_secs(FAILURE_WINDOW_SECS) {
+                    h.consecutive_failures = 0;
+                    h.failure_window_start = Some(now);
+                }
+            } else {
+                h.failure_window_start = Some(now);
+            }
+
+            h.consecutive_failures += 1;
+            h.consecutive_successes = 0;
+
+            // Reach threshold → open circuit
+            if h.consecutive_failures >= FAILURE_THRESHOLD {
+                h.circuit_state = CircuitState::Open;
+                h.is_healthy = false;
+                h.last_failure_time = Some(now);
+                tracing::warn!(
+                    instance = instance_name,
+                    consecutive_failures = h.consecutive_failures,
+                    failure_type = ?failure_type,
+                    "🔴 Circuit opened due to {} consecutive failures",
+                    h.consecutive_failures
+                );
+            } else {
+                tracing::debug!(
+                    instance = instance_name,
+                    consecutive_failures = h.consecutive_failures,
+                    threshold = FAILURE_THRESHOLD,
+                    "⚠️ Failure recorded ({}/{})",
+                    h.consecutive_failures,
+                    FAILURE_THRESHOLD
+                );
+            }
+        }
+    }
+
+    /// Check if instance is available (respects circuit breaker state)
+    pub async fn is_instance_available(&self, instance_name: &str) -> bool {
+        let health = self.health_state.read().await;
+        if let Some(h) = health.instances.get(instance_name) {
+            match h.circuit_state {
+                CircuitState::Closed => true,
+                CircuitState::Open => false,
+                CircuitState::HalfOpen => {
+                    // Half-open state: allow through (controlled by health_recovery_loop)
+                    true
+                }
+            }
+        } else {
+            false
+        }
+    }
+
     /// Clean up expired sessions (background task)
     pub async fn session_cleanup_loop(self: Arc<Self>) {
         let mut interval = tokio::time::interval(Duration::from_secs(300));  // 5 minutes
@@ -362,7 +502,7 @@ impl LoadBalancer {
         }
     }
 
-    /// Health check recovery loop with active health checking
+    /// Health check recovery loop with active health checking and exponential backoff
     pub async fn health_recovery_loop(self: Arc<Self>) {
         let mut interval = tokio::time::interval(Duration::from_secs(10));
 
@@ -373,37 +513,56 @@ impl LoadBalancer {
             let now = Instant::now();
 
             for (name, inst_health) in health.instances.iter_mut() {
-                if !inst_health.is_healthy {
+                if !inst_health.is_healthy || inst_health.circuit_state == CircuitState::Open {
                     if let Some(last_failure) = inst_health.last_failure_time {
-                        // Get the instance's configured timeout
-                        let timeout = self.instances.iter()
+                        // Get the instance's configured base timeout
+                        let base_timeout = self.instances.iter()
                             .find(|i| i.name.as_ref() == name)
-                            .map(|i| Duration::from_secs(i.config.failure_timeout_seconds()))
-                            .unwrap_or(Duration::from_secs(60));
+                            .map(|i| i.config.failure_timeout_seconds())
+                            .unwrap_or(60);
 
-                        if now.duration_since(last_failure) >= timeout {
+                        // Calculate backoff with exponential increase
+                        let backoff_duration = calculate_backoff(
+                            inst_health.consecutive_failures,
+                            base_timeout
+                        );
+
+                        if now.duration_since(last_failure) >= backoff_duration {
                             // Attempt active health check before marking as healthy
                             let check_result = self.perform_active_health_check(name).await;
 
                             match check_result {
                                 Ok(()) => {
-                                    // Health check passed, mark as healthy
+                                    // Health check passed, transition to half-open
+                                    inst_health.circuit_state = CircuitState::HalfOpen;
                                     inst_health.is_healthy = true;
+                                    inst_health.consecutive_successes = 1; // First success
 
                                     tracing::info!(
                                         instance = name,
-                                        timeout_seconds = timeout.as_secs(),
-                                        "Instance passed active health check and recovered"
+                                        backoff_seconds = backoff_duration.as_secs(),
+                                        consecutive_failures = inst_health.consecutive_failures,
+                                        "🟡 Instance passed health check, circuit half-open (testing recovery)"
                                     );
                                 }
                                 Err(e) => {
-                                    // Health check failed, extend recovery time
-                                    inst_health.last_failure_time = Some(Instant::now());
+                                    // Health check failed, increment failures and reset timer
+                                    inst_health.consecutive_failures += 1;
+                                    inst_health.last_failure_time = Some(now);
+
+                                    let next_backoff = calculate_backoff(
+                                        inst_health.consecutive_failures,
+                                        base_timeout
+                                    );
 
                                     tracing::warn!(
                                         instance = name,
                                         error = %e,
-                                        "Active health check failed, extending recovery time"
+                                        consecutive_failures = inst_health.consecutive_failures,
+                                        next_retry_seconds = next_backoff.as_secs(),
+                                        "❌ Health check failed, extending recovery time (backoff: {}s → {}s)",
+                                        backoff_duration.as_secs(),
+                                        next_backoff.as_secs()
                                     );
                                 }
                             }

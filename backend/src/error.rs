@@ -29,6 +29,19 @@ pub enum AppError {
     HttpRequest(reqwest::Error),
     /// OAuth error
     OAuthError { message: String },
+    /// Rate limit error
+    RateLimitError {
+        provider: String,
+        instance: String,
+        retry_after: Option<u64>, // seconds
+        message: String,
+    },
+    /// Service overloaded error
+    ServiceOverloaded {
+        provider: String,
+        instance: String,
+        message: String,
+    },
 }
 
 impl fmt::Display for AppError {
@@ -46,6 +59,37 @@ impl fmt::Display for AppError {
             Self::NoHealthyInstances(msg) => write!(f, "No healthy instances: {}", msg),
             Self::HttpRequest(err) => write!(f, "HTTP request error: {}", err),
             Self::OAuthError { message } => write!(f, "OAuth error: {}", message),
+            Self::RateLimitError {
+                provider,
+                instance,
+                retry_after,
+                message,
+            } => {
+                if let Some(seconds) = retry_after {
+                    write!(
+                        f,
+                        "Rate limit error (provider: {}, instance: {}, retry after {}s): {}",
+                        provider, instance, seconds, message
+                    )
+                } else {
+                    write!(
+                        f,
+                        "Rate limit error (provider: {}, instance: {}): {}",
+                        provider, instance, message
+                    )
+                }
+            }
+            Self::ServiceOverloaded {
+                provider,
+                instance,
+                message,
+            } => {
+                write!(
+                    f,
+                    "Service overloaded (provider: {}, instance: {}): {}",
+                    provider, instance, message
+                )
+            }
         }
     }
 }
@@ -65,6 +109,8 @@ impl IntoResponse for AppError {
             Self::NoHealthyInstances(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
             Self::HttpRequest(err) => (StatusCode::BAD_GATEWAY, err.to_string()),
             Self::OAuthError { message } => (StatusCode::UNAUTHORIZED, message.clone()),
+            Self::RateLimitError { message, .. } => (StatusCode::TOO_MANY_REQUESTS, message.clone()),
+            Self::ServiceOverloaded { message, .. } => (StatusCode::SERVICE_UNAVAILABLE, message.clone()),
         };
 
         let body = Json(json!({
@@ -90,6 +136,8 @@ fn error_type_name(error: &AppError) -> &'static str {
         AppError::NoHealthyInstances(_) => "no_healthy_instances",
         AppError::HttpRequest(_) => "http_request_error",
         AppError::OAuthError { .. } => "oauth_error",
+        AppError::RateLimitError { .. } => "rate_limit_error",
+        AppError::ServiceOverloaded { .. } => "service_overloaded",
     }
 }
 

@@ -45,6 +45,9 @@ pub async fn execute(hours: u32, detailed: bool) -> Result<()> {
     // Display system summary
     display_system_summary(&cfg, hours).await?;
 
+    // Display provider health status
+    display_provider_health(&cfg).await?;
+
     // Display token usage statistics
     display_token_usage(&cfg, hours, detailed).await?;
 
@@ -95,6 +98,137 @@ async fn display_system_summary(cfg: &config::Config, hours: u32) -> Result<()> 
     }
 
     println!();
+    Ok(())
+}
+
+/// Provider health status row from database
+#[derive(Debug, FromRow)]
+struct ProviderHealthRow {
+    provider: String,
+    instance: String,
+    event_type: String,
+    consecutive_failures: i64,
+    next_retry_secs: Option<i64>,
+    timestamp: String,
+}
+
+/// Display provider health status
+async fn display_provider_health(cfg: &config::Config) -> Result<()> {
+    if !cfg.observability.enabled {
+        println!("Provider Health Status: Not available (observability disabled)\n");
+        return Ok(());
+    }
+
+    let pool = match connect_to_database(cfg).await {
+        Ok(pool) => pool,
+        Err(e) => {
+            println!("Provider Health Status: Not available ({})\n", e);
+            return Ok(());
+        }
+    };
+
+    // Get all configured instances
+    let mut all_instances = Vec::new();
+    for inst in &cfg.providers.openai {
+        all_instances.push(("openai".to_string(), inst.name.clone()));
+    }
+    for inst in &cfg.providers.anthropic {
+        all_instances.push(("anthropic".to_string(), inst.name.clone()));
+    }
+    for inst in &cfg.providers.gemini {
+        all_instances.push(("gemini".to_string(), inst.name.clone()));
+    }
+
+    if all_instances.is_empty() {
+        println!("Provider Health Status: No providers configured\n");
+        return Ok(());
+    }
+
+    // Query latest event for each instance
+    let mut health_statuses = Vec::new();
+
+    for (provider, instance) in &all_instances {
+        let latest_event = sqlx::query_as::<_, ProviderHealthRow>(
+            "SELECT provider, instance, event_type, consecutive_failures, next_retry_secs, timestamp
+             FROM failover_events
+             WHERE provider = ? AND instance = ?
+             ORDER BY timestamp DESC
+             LIMIT 1"
+        )
+        .bind(provider)
+        .bind(instance)
+        .fetch_optional(&pool)
+        .await?;
+
+        match latest_event {
+            Some(event) => {
+                health_statuses.push((provider.clone(), instance.clone(), Some(event)));
+            }
+            None => {
+                // No events = healthy
+                health_statuses.push((provider.clone(), instance.clone(), None));
+            }
+        }
+    }
+
+    // Display health status
+    println!("Provider Health Status:");
+
+    let mut healthy_count = 0;
+    let mut recovering_count = 0;
+    let mut unhealthy_count = 0;
+
+    for (provider, instance, event_opt) in &health_statuses {
+        let (status_symbol, status_text, details) = match event_opt {
+            None => {
+                healthy_count += 1;
+                ("✅", "Healthy", format!("(0 failures)"))
+            }
+            Some(event) => {
+                match event.event_type.as_str() {
+                    "circuit_closed" => {
+                        healthy_count += 1;
+                        ("✅", "Healthy", format!("(0 failures)"))
+                    }
+                    "circuit_half_open" | "recovery" => {
+                        recovering_count += 1;
+                        let retry_info = if let Some(retry_secs) = event.next_retry_secs {
+                            format!("(testing recovery, retry in {}s)", retry_secs)
+                        } else {
+                            format!("(testing recovery)")
+                        };
+                        ("🟡", "Recovering", retry_info)
+                    }
+                    "circuit_open" | "failure" => {
+                        unhealthy_count += 1;
+                        let failures = event.consecutive_failures;
+                        let retry_info = if let Some(retry_secs) = event.next_retry_secs {
+                            format!("({} failures, retry in {}s)", failures, retry_secs)
+                        } else {
+                            format!("({} failures)", failures)
+                        };
+                        ("🔴", "Unhealthy", retry_info)
+                    }
+                    _ => {
+                        healthy_count += 1;
+                        ("✅", "Healthy", format!("(0 failures)"))
+                    }
+                }
+            }
+        };
+
+        println!("  {:<30} {} {:<12} {}",
+            format!("{}-{}", provider, instance),
+            status_symbol,
+            status_text,
+            details
+        );
+    }
+
+    let total = health_statuses.len();
+    println!("\nOverall: {}/{} healthy, {} recovering, {} down\n",
+        healthy_count, total, recovering_count, unhealthy_count);
+
     Ok(())
 }
 

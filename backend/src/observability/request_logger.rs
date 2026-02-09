@@ -223,6 +223,67 @@ impl RequestLogger {
             }
         });
     }
+
+    /// Log a failover event (non-blocking)
+    ///
+    /// Records circuit breaker events to the database for observability.
+    pub async fn log_failover_event(
+        pool: &SqlitePool,
+        provider: &str,
+        instance: &str,
+        event_type: &str,
+        failure_type: Option<&str>,
+        error_message: Option<&str>,
+        consecutive_failures: u32,
+        next_retry_secs: Option<u64>,
+    ) {
+        let pool = pool.clone();
+        let provider = provider.to_string();
+        let instance = instance.to_string();
+        let event_type = event_type.to_string();
+        let failure_type = failure_type.map(|s| s.to_string());
+        let error_message = error_message.map(|s| {
+            // Truncate error message to 500 chars
+            if s.len() > 500 {
+                format!("{}...", &s[..497])
+            } else {
+                s.to_string()
+            }
+        });
+
+        // Spawn background task for non-blocking write
+        tokio::spawn(async move {
+            let timestamp = chrono::Utc::now().to_rfc3339();
+
+            if let Err(e) = sqlx::query(
+                r#"
+                INSERT INTO failover_events (
+                    timestamp, provider, instance, event_type, failure_type,
+                    error_message, consecutive_failures, next_retry_secs
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "#
+            )
+            .bind(&timestamp)
+            .bind(&provider)
+            .bind(&instance)
+            .bind(&event_type)
+            .bind(&failure_type)
+            .bind(&error_message)
+            .bind(consecutive_failures as i64)
+            .bind(next_retry_secs.map(|s| s as i64))
+            .execute(&pool)
+            .await
+            {
+                tracing::error!(
+                    provider = %provider,
+                    instance = %instance,
+                    event_type = %event_type,
+                    error = %e,
+                    "Failed to log failover event to database"
+                );
+            }
+        });
+    }
 }
 
 #[cfg(test)]
