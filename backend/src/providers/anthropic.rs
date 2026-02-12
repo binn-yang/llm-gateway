@@ -1,59 +1,10 @@
-use crate::{
-    config::AnthropicInstanceConfig,
-    error::AppError,
-    models::anthropic::MessagesRequest,
-};
-use reqwest::Client;
-use std::time::Duration;
-
-/// Call Anthropic Messages API
-pub async fn create_message(
-    client: &Client,
-    config: &AnthropicInstanceConfig,
-    request: MessagesRequest,
-    oauth_token: Option<&str>,
-) -> Result<reqwest::Response, AppError> {
-    let url = format!("{}/messages", config.base_url);
-
-    let mut req = client
-        .post(&url)
-        .header("anthropic-version", &config.api_version)
-        .header("Content-Type", "application/json")
-        .timeout(Duration::from_secs(config.timeout_seconds));
-
-    // Add authentication header based on auth mode
-    if let Some(token) = oauth_token {
-        req = req.header("Authorization", format!("Bearer {}", token));
-    } else if let Some(api_key) = &config.api_key {
-        req = req.header("x-api-key", api_key);
-    } else {
-        return Err(AppError::ConfigError(
-            "No authentication credentials provided".to_string()
-        ));
-    }
-
-    let response = req
-        .json(&request)
-        .send()
-        .await?;
-
-    // Check for HTTP errors
-    if !response.status().is_success() {
-        let status = response.status();
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(AppError::UpstreamError {
-            status,
-            message: error_text,
-        });
-    }
-
-    Ok(response)
-}
+// Anthropic provider functions have been migrated to the LlmProvider trait.
+// See provider_trait.rs::AnthropicProvider for the new implementation.
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::models::anthropic::Message;
+    use crate::config::AnthropicInstanceConfig;
+    use crate::models::anthropic::{Message, MessagesRequest};
 
     fn create_test_config() -> AnthropicInstanceConfig {
         AnthropicInstanceConfig {

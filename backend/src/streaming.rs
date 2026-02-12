@@ -62,20 +62,20 @@ impl StreamingUsageTracker {
 
     /// Set OpenAI-style usage (single chunk with complete usage)
     pub fn set_usage(&self, prompt: u64, completion: u64) {
-        *self.input_tokens.lock().unwrap() = Some(prompt);
-        *self.output_tokens.lock().unwrap() = Some(completion);
+        if let Ok(mut guard) = self.input_tokens.lock() { *guard = Some(prompt); }
+        if let Ok(mut guard) = self.output_tokens.lock() { *guard = Some(completion); }
         self.notify_complete();
     }
 
     /// Set Anthropic-style input tokens (from message_start)
     pub fn set_input_tokens(&self, tokens: u64) {
-        *self.input_tokens.lock().unwrap() = Some(tokens);
+        if let Ok(mut guard) = self.input_tokens.lock() { *guard = Some(tokens); }
         // Don't notify yet - still waiting for output_tokens
     }
 
     /// Set Anthropic-style output tokens (from message_delta)
     pub fn set_output_tokens(&self, tokens: u64) {
-        *self.output_tokens.lock().unwrap() = Some(tokens);
+        if let Ok(mut guard) = self.output_tokens.lock() { *guard = Some(tokens); }
         self.notify_complete();
     }
 
@@ -86,9 +86,9 @@ impl StreamingUsageTracker {
     /// - `cache_creation`: Tokens used to create prompt cache (optional)
     /// - `cache_read`: Tokens read from prompt cache (optional)
     pub fn set_input_usage(&self, input: u64, cache_creation: Option<u64>, cache_read: Option<u64>) {
-        *self.input_tokens.lock().unwrap() = Some(input);
-        *self.cache_creation_input_tokens.lock().unwrap() = cache_creation;
-        *self.cache_read_input_tokens.lock().unwrap() = cache_read;
+        if let Ok(mut guard) = self.input_tokens.lock() { *guard = Some(input); }
+        if let Ok(mut guard) = self.cache_creation_input_tokens.lock() { *guard = cache_creation; }
+        if let Ok(mut guard) = self.cache_read_input_tokens.lock() { *guard = cache_read; }
         // Don't notify yet - still waiting for output_tokens
     }
 
@@ -110,10 +110,10 @@ impl StreamingUsageTracker {
         cache_creation: Option<u64>,
         cache_read: Option<u64>,
     ) {
-        *self.input_tokens.lock().unwrap() = Some(input);
-        *self.output_tokens.lock().unwrap() = Some(output);
-        *self.cache_creation_input_tokens.lock().unwrap() = cache_creation;
-        *self.cache_read_input_tokens.lock().unwrap() = cache_read;
+        if let Ok(mut guard) = self.input_tokens.lock() { *guard = Some(input); }
+        if let Ok(mut guard) = self.output_tokens.lock() { *guard = Some(output); }
+        if let Ok(mut guard) = self.cache_creation_input_tokens.lock() { *guard = cache_creation; }
+        if let Ok(mut guard) = self.cache_read_input_tokens.lock() { *guard = cache_read; }
         self.notify_complete();
     }
 
@@ -174,7 +174,7 @@ impl StreamingUsageTracker {
 
     /// Accumulate a chunk for body logging (with size limits)
     pub fn accumulate_chunk(&self, chunk: &str) {
-        let mut chunks = self.accumulated_chunks.lock().unwrap();
+        let Ok(mut chunks) = self.accumulated_chunks.lock() else { return; };
 
         // Check limits
         if chunks.len() < self.max_chunks {
@@ -187,14 +187,16 @@ impl StreamingUsageTracker {
 
     /// Get accumulated response (all chunks joined)
     pub fn get_accumulated_response(&self) -> String {
-        let chunks = self.accumulated_chunks.lock().unwrap();
-        chunks.join("")
+        self.accumulated_chunks.lock()
+            .map(|chunks| chunks.join(""))
+            .unwrap_or_default()
     }
 
     /// Get number of accumulated chunks
     pub fn chunks_count(&self) -> usize {
-        let chunks = self.accumulated_chunks.lock().unwrap();
-        chunks.len()
+        self.accumulated_chunks.lock()
+            .map(|chunks| chunks.len())
+            .unwrap_or(0)
     }
 }
 
@@ -223,12 +225,13 @@ pub fn create_openai_sse_stream_with_usage(
                         // Try to extract usage from this chunk
                         if let Ok(chunk) = serde_json::from_str::<ChatCompletionChunk>(data) {
                             if let Some(usage) = chunk.usage {
-                                let mut tracker = usage_tracker_clone.lock().unwrap();
-                                *tracker = Some(StreamUsage {
-                                    request_id: request_id.clone(),
-                                    prompt_tokens: usage.prompt_tokens,
-                                    completion_tokens: usage.completion_tokens,
-                                });
+                                if let Ok(mut tracker) = usage_tracker_clone.lock() {
+                                    *tracker = Some(StreamUsage {
+                                        request_id: request_id.clone(),
+                                        prompt_tokens: usage.prompt_tokens,
+                                        completion_tokens: usage.completion_tokens,
+                                    });
+                                }
                             }
                         }
 
@@ -517,7 +520,9 @@ pub fn create_gemini_sse_stream(
                             serde_json::from_str::<GenerateContentResponse>(data)
                         {
                             // Convert to OpenAI chunk
-                            let mut is_first = is_first_chunk.lock().unwrap();
+                            let Ok(mut is_first) = is_first_chunk.lock() else {
+                                continue;
+                            };
                             match converters::gemini_streaming::convert_streaming_chunk(
                                 &gemini_chunk,
                                 &request_id,
@@ -593,7 +598,9 @@ pub fn create_gemini_sse_stream_with_tracker(
                             }
 
                             // Convert to OpenAI chunk
-                            let mut is_first = is_first_chunk.lock().unwrap();
+                            let Ok(mut is_first) = is_first_chunk.lock() else {
+                                continue;
+                            };
                             match converters::gemini_streaming::convert_streaming_chunk(
                                 &gemini_chunk,
                                 &request_id,
@@ -655,42 +662,39 @@ pub fn create_native_gemini_sse_stream_with_tracker(
                 let mut events = Vec::new();
 
                 // Append to buffer
-                let mut buf = buffer.lock().unwrap();
-                buf.push_str(&chunk_text);
+                if let Ok(mut buf) = buffer.lock() {
+                    buf.push_str(&chunk_text);
 
-                // Process complete SSE events (terminated by double newline)
-                while let Some(event_end) = buf.find("\n\n") {
-                    let event_text = buf[..event_end].to_string();
-                    *buf = buf[event_end + 2..].to_string(); // +2 to skip "\n\n"
+                    // Process complete SSE events (terminated by double newline)
+                    while let Some(event_end) = buf.find("\n\n") {
+                        let event_text = buf[..event_end].to_string();
+                        *buf = buf[event_end + 2..].to_string(); // +2 to skip "\n\n"
 
-                    // Accumulate chunk for body logging
-                    tracker.accumulate_chunk(&event_text);
+                        // Accumulate chunk for body logging
+                        tracker.accumulate_chunk(&event_text);
 
-                    // Parse Gemini SSE format: "data: {...}\n\n"
-                    for line in event_text.lines() {
-                        if let Some(data) = line.strip_prefix("data: ") {
-                            // 尝试提取 usage_metadata（通常在最后一个 chunk）
-                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                                // 检查是否包含 usage_metadata（通常在最后一个 chunk）
-                                if let Some(usage) = json.get("usageMetadata") {
-                                    let prompt_tokens = usage.get("promptTokenCount").and_then(|v| v.as_u64());
-                                    let candidates_tokens = usage.get("candidatesTokenCount").and_then(|v| v.as_u64());
+                        // Parse Gemini SSE format: "data: {...}\n\n"
+                        for line in event_text.lines() {
+                            if let Some(data) = line.strip_prefix("data: ") {
+                                // 尝试提取 usage_metadata（通常在最后一个 chunk）
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                                    if let Some(usage) = json.get("usageMetadata") {
+                                        let prompt_tokens = usage.get("promptTokenCount").and_then(|v| v.as_u64());
+                                        let candidates_tokens = usage.get("candidatesTokenCount").and_then(|v| v.as_u64());
 
-                                    // 检查两个值是否都存在
-                                    if let (Some(prompt), Some(candidates)) = (prompt_tokens, candidates_tokens) {
-                                        // 提取到完整的 token 计数
-                                        tracker.set_usage(prompt, candidates);
+                                        if let (Some(prompt), Some(candidates)) = (prompt_tokens, candidates_tokens) {
+                                            tracker.set_usage(prompt, candidates);
+                                        }
                                     }
                                 }
-                            }
 
-                            // 透传原始数据
-                            events.push(Ok(Event::default().data(data.to_string())));
+                                // 透传原始数据
+                                events.push(Ok(Event::default().data(data.to_string())));
+                            }
                         }
                     }
-                }
+                } // buffer lock released here
 
-                drop(buf); // Release lock before returning
                 events
             }
             Err(e) => {
@@ -781,40 +785,40 @@ pub fn create_native_anthropic_sse_stream(
                 let mut events = Vec::new();
 
                 // Append to buffer
-                let mut buf = buffer.lock().unwrap();
-                buf.push_str(&chunk_text);
+                if let Ok(mut buf) = buffer.lock() {
+                    buf.push_str(&chunk_text);
 
-                // Process complete SSE events (terminated by double newline)
-                while let Some(event_end) = buf.find("\n\n") {
-                    let event_text = buf[..event_end].to_string();
-                    *buf = buf[event_end + 2..].to_string(); // +2 to skip "\n\n"
+                    // Process complete SSE events (terminated by double newline)
+                    while let Some(event_end) = buf.find("\n\n") {
+                        let event_text = buf[..event_end].to_string();
+                        *buf = buf[event_end + 2..].to_string(); // +2 to skip "\n\n"
 
-                    // Parse this complete SSE event
-                    let mut current_event_type: Option<String> = None;
-                    let mut current_data_lines: Vec<String> = Vec::new();
+                        // Parse this complete SSE event
+                        let mut current_event_type: Option<String> = None;
+                        let mut current_data_lines: Vec<String> = Vec::new();
 
-                    for line in event_text.lines() {
-                        if let Some(event_name) = line.strip_prefix("event: ") {
-                            current_event_type = Some(event_name.trim().to_string());
-                        } else if let Some(data) = line.strip_prefix("data: ") {
-                            current_data_lines.push(data.to_string());
-                        }
-                    }
-
-                    // Build the SSE event
-                    if !current_data_lines.is_empty() {
-                        let data = current_data_lines.join("\n");
-                        let mut event = Event::default().data(data);
-
-                        if let Some(event_type) = current_event_type {
-                            event = event.event(event_type);
+                        for line in event_text.lines() {
+                            if let Some(event_name) = line.strip_prefix("event: ") {
+                                current_event_type = Some(event_name.trim().to_string());
+                            } else if let Some(data) = line.strip_prefix("data: ") {
+                                current_data_lines.push(data.to_string());
+                            }
                         }
 
-                        events.push(Ok(event));
-                    }
-                }
+                        // Build the SSE event
+                        if !current_data_lines.is_empty() {
+                            let data = current_data_lines.join("\n");
+                            let mut event = Event::default().data(data);
 
-                drop(buf); // Release lock before returning
+                            if let Some(event_type) = current_event_type {
+                                event = event.event(event_type);
+                            }
+
+                            events.push(Ok(event));
+                        }
+                    }
+                } // buffer lock released here
+
                 events
             }
             Err(e) => {
@@ -847,118 +851,114 @@ pub fn create_native_anthropic_sse_stream_with_tracker(
                 let chunk_text = String::from_utf8_lossy(&bytes).to_string();
                 let mut events = Vec::new();
 
-                let mut buf = buffer.lock().unwrap();
-                buf.push_str(&chunk_text);
+                if let Ok(mut buf) = buffer.lock() {
+                    buf.push_str(&chunk_text);
 
-                // Process complete SSE events (terminated by double newline)
-                while let Some(event_end) = buf.find("\n\n") {
-                    let event_text = buf[..event_end].to_string();
-                    *buf = buf[event_end + 2..].to_string(); // +2 to skip "\n\n"
+                    // Process complete SSE events (terminated by double newline)
+                    while let Some(event_end) = buf.find("\n\n") {
+                        let event_text = buf[..event_end].to_string();
+                        *buf = buf[event_end + 2..].to_string(); // +2 to skip "\n\n"
 
-                    // Accumulate chunk for body logging
-                    tracker.accumulate_chunk(&event_text);
+                        // Accumulate chunk for body logging
+                        tracker.accumulate_chunk(&event_text);
 
-                    // Parse this complete SSE event
-                    let mut current_event_type: Option<String> = None;
-                    let mut current_data_lines: Vec<String> = Vec::new();
+                        // Parse this complete SSE event
+                        let mut current_event_type: Option<String> = None;
+                        let mut current_data_lines: Vec<String> = Vec::new();
 
-                    for line in event_text.lines() {
-                        if let Some(event_name) = line.strip_prefix("event: ") {
-                            current_event_type = Some(event_name.trim().to_string());
-                        } else if let Some(data) = line.strip_prefix("data: ") {
-                            current_data_lines.push(data.to_string());
+                        for line in event_text.lines() {
+                            if let Some(event_name) = line.strip_prefix("event: ") {
+                                current_event_type = Some(event_name.trim().to_string());
+                            } else if let Some(data) = line.strip_prefix("data: ") {
+                                current_data_lines.push(data.to_string());
+                            }
                         }
-                    }
 
-                    // EXTRACT USAGE from native Anthropic events
-                    if let Some(event_type) = &current_event_type {
-                        if let Some(data) = current_data_lines.first() {
-                            tracing::debug!(
-                                request_id = %tracker.request_id(),
-                                event_type = %event_type,
-                                data_len = data.len(),
-                                "Processing SSE event"
-                            );
-
-                            // Log raw JSON for message_delta events BEFORE parsing
-                            if event_type == "message_delta" {
+                        // EXTRACT USAGE from native Anthropic events
+                        if let Some(event_type) = &current_event_type {
+                            if let Some(data) = current_data_lines.first() {
                                 tracing::debug!(
                                     request_id = %tracker.request_id(),
-                                    raw_json = %data,
-                                    "Raw message_delta JSON (before parsing)"
+                                    event_type = %event_type,
+                                    data_len = data.len(),
+                                    "Processing SSE event"
                                 );
-                            }
 
-                            match serde_json::from_str::<StreamEvent>(data) {
-                                Ok(anthropic_event) => match event_type.as_str() {
-                                    "message_start" => {
-                                        // message_start no longer extracts tokens
-                                        // Only used to mark stream start
-                                        tracing::debug!(
-                                            request_id = %tracker.request_id(),
-                                            "Received message_start event (token extraction happens in message_delta)"
-                                        );
-                                    }
-                                    "message_delta" => {
-                                        // Log raw JSON payload for debugging
-                                        tracing::debug!(
-                                            request_id = %tracker.request_id(),
-                                            raw_json = %data,
-                                            "Raw message_delta event payload (native API)"
-                                        );
+                                // Log raw JSON for message_delta events BEFORE parsing
+                                if event_type == "message_delta" {
+                                    tracing::debug!(
+                                        request_id = %tracker.request_id(),
+                                        raw_json = %data,
+                                        "Raw message_delta JSON (before parsing)"
+                                    );
+                                }
 
-                                        // Extract ALL tokens from message_delta (final values)
-                                        if let Some(usage) = &anthropic_event.usage {
+                                match serde_json::from_str::<StreamEvent>(data) {
+                                    Ok(anthropic_event) => match event_type.as_str() {
+                                        "message_start" => {
                                             tracing::debug!(
                                                 request_id = %tracker.request_id(),
-                                                input_tokens = usage.input_tokens,
-                                                output_tokens = usage.output_tokens,
-                                                cache_creation = ?usage.cache_creation_input_tokens,
-                                                cache_read = ?usage.cache_read_input_tokens,
-                                                "Extracted all tokens from message_delta (native API)"
-                                            );
-                                            tracker.set_full_usage(
-                                                usage.input_tokens,
-                                                usage.output_tokens,
-                                                usage.cache_creation_input_tokens,
-                                                usage.cache_read_input_tokens,
-                                            );
-                                        } else {
-                                            tracing::warn!(
-                                                request_id = %tracker.request_id(),
-                                                "message_delta has no usage data"
+                                                "Received message_start event (token extraction happens in message_delta)"
                                             );
                                         }
+                                        "message_delta" => {
+                                            tracing::debug!(
+                                                request_id = %tracker.request_id(),
+                                                raw_json = %data,
+                                                "Raw message_delta event payload (native API)"
+                                            );
+
+                                            if let Some(usage) = &anthropic_event.usage {
+                                                tracing::debug!(
+                                                    request_id = %tracker.request_id(),
+                                                    input_tokens = usage.input_tokens,
+                                                    output_tokens = usage.output_tokens,
+                                                    cache_creation = ?usage.cache_creation_input_tokens,
+                                                    cache_read = ?usage.cache_read_input_tokens,
+                                                    "Extracted all tokens from message_delta (native API)"
+                                                );
+                                                tracker.set_full_usage(
+                                                    usage.input_tokens,
+                                                    usage.output_tokens,
+                                                    usage.cache_creation_input_tokens,
+                                                    usage.cache_read_input_tokens,
+                                                );
+                                            } else {
+                                                tracing::warn!(
+                                                    request_id = %tracker.request_id(),
+                                                    "message_delta has no usage data"
+                                                );
+                                            }
+                                        }
+                                        _ => {}
+                                    },
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            request_id = %tracker.request_id(),
+                                            event_type = %event_type,
+                                            error = %e,
+                                            raw_data = %data,
+                                            "Failed to parse StreamEvent JSON"
+                                        );
                                     }
-                                    _ => {}
-                                },
-                                Err(e) => {
-                                    tracing::warn!(
-                                        request_id = %tracker.request_id(),
-                                        event_type = %event_type,
-                                        error = %e,
-                                        raw_data = %data,
-                                        "Failed to parse StreamEvent JSON"
-                                    );
                                 }
                             }
                         }
-                    }
 
-                    // Build the SSE event
-                    if !current_data_lines.is_empty() {
-                        let data = current_data_lines.join("\n");
-                        let mut event = Event::default().data(data);
+                        // Build the SSE event
+                        if !current_data_lines.is_empty() {
+                            let data = current_data_lines.join("\n");
+                            let mut event = Event::default().data(data);
 
-                        if let Some(event_type) = current_event_type {
-                            event = event.event(event_type);
+                            if let Some(event_type) = current_event_type {
+                                event = event.event(event_type);
+                            }
+
+                            events.push(Ok(event));
                         }
-
-                        events.push(Ok(event));
                     }
-                }
+                } // buffer lock released here
 
-                drop(buf); // Release lock before returning
                 events
             }
             Err(e) => {

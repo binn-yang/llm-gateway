@@ -1,58 +1,10 @@
-use crate::{
-    config::ProviderInstanceConfig,
-    error::AppError,
-    models::openai::ChatCompletionRequest,
-};
-use reqwest::Client;
-use std::time::Duration;
-
-/// Call OpenAI Chat Completions API
-pub async fn chat_completions(
-    client: &Client,
-    config: &ProviderInstanceConfig,
-    request: ChatCompletionRequest,
-    oauth_token: Option<&str>,
-) -> Result<reqwest::Response, AppError> {
-    let url = format!("{}/chat/completions", config.base_url);
-
-    let mut req = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .timeout(Duration::from_secs(config.timeout_seconds));
-
-    // Add authentication header
-    if let Some(token) = oauth_token {
-        req = req.header("Authorization", format!("Bearer {}", token));
-    } else if let Some(api_key) = &config.api_key {
-        req = req.header("Authorization", format!("Bearer {}", api_key));
-    } else {
-        return Err(AppError::ConfigError(
-            "No authentication credentials provided".to_string()
-        ));
-    }
-
-    let response = req
-        .json(&request)
-        .send()
-        .await?;
-
-    // Check for HTTP errors
-    if !response.status().is_success() {
-        let status = response.status();
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(AppError::UpstreamError {
-            status,
-            message: error_text,
-        });
-    }
-
-    Ok(response)
-}
+// OpenAI provider functions have been migrated to the LlmProvider trait.
+// See provider_trait.rs::OpenAIProvider for the new implementation.
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::models::openai::ChatMessage;
+    use crate::config::ProviderInstanceConfig;
+    use crate::models::openai::{ChatCompletionRequest, ChatMessage};
 
     fn create_test_config() -> ProviderInstanceConfig {
         ProviderInstanceConfig {
@@ -100,8 +52,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_chat_completions_request_format() {
-        // This test verifies the request is properly formatted
-        // We can't actually call the API without a valid key, but we can test the structure
         let _config = create_test_config();
         let request = create_test_request();
 

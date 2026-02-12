@@ -3,7 +3,6 @@ use crate::{
     error::AppError,
     models::anthropic::{MessagesRequest, MessagesResponse},
     observability::RequestEvent,
-    providers,
     retry::RequestStatus,
     streaming,
 };
@@ -137,12 +136,13 @@ pub async fn handle_messages(
     // 4. 第三方 API 的偶发错误由客户端重试机制处理（Claude Code 已验证有效）
     let anthropic_request = request;
 
-    // 4. Get LoadBalancer for Anthropic provider
+    // 4. Get LoadBalancer and Provider for Anthropic
     let registry = state.registry.load();
     let registered = registry
         .get("anthropic")
         .ok_or_else(|| AppError::ProviderDisabled("Anthropic provider not configured".to_string()))?;
     let load_balancer = registered.load_balancer.clone();
+    let provider = registered.provider.clone();
 
     // 3. Execute request with sticky session (returns SessionResult)
     let http_client = state.http_client.clone();
@@ -154,54 +154,25 @@ pub async fn handle_messages(
             let http_client = http_client.clone();
             let anthropic_request = anthropic_request.clone();
             let oauth_manager = oauth_manager.clone();
+            let provider = provider.clone();
             async move {
-                // Extract config from the instance
-                let config = instance.config
-                    .as_any()
-                    .downcast_ref::<crate::config::AnthropicInstanceConfig>()
-                    .ok_or_else(|| AppError::InternalError("Invalid instance config type".to_string()))?;
+                let oauth_token = crate::handlers::common::resolve_oauth_token(
+                    instance.config.as_ref(), &oauth_manager,
+                ).await?;
 
-                // Get OAuth token if needed
-                let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
-                    if let Some(ref oauth_provider_name) = config.oauth_provider {
-                        if let Some(ref manager) = oauth_manager {
-                            match manager.get_valid_token(oauth_provider_name).await {
-                                Ok(token) => {
-                                    tracing::debug!(
-                                        provider = %oauth_provider_name,
-                                        "Retrieved OAuth token for Anthropic Messages API request"
-                                    );
-                                    Some(token.access_token)
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        provider = %oauth_provider_name,
-                                        error = %e,
-                                        "Failed to get OAuth token"
-                                    );
-                                    return Err(e);
-                                }
-                            }
-                        } else {
-                            return Err(AppError::ConfigError(
-                                "OAuth mode enabled but OAuth manager not initialized".to_string()
-                            ));
-                        }
-                    } else {
-                        return Err(AppError::ConfigError(
-                            "OAuth mode enabled but oauth_provider not specified".to_string()
-                        ));
-                    }
-                } else {
-                    None
-                };
+                let body = serde_json::to_value(&anthropic_request)
+                    .map_err(|e| AppError::ConversionError(format!("Failed to serialize request: {}", e)))?;
 
-                // Call Anthropic API with OAuth token if available
-                providers::anthropic::create_message(
+                crate::handlers::common::send_and_check(
+                    provider.as_ref(),
                     &http_client,
-                    config,
-                    anthropic_request,
-                    oauth_token.as_deref()
+                    instance.config.as_ref(),
+                    crate::provider_trait::UpstreamRequest {
+                        body,
+                        model: anthropic_request.model.clone(),
+                        stream: anthropic_request.stream.unwrap_or(false),
+                        oauth_token,
+                    },
                 ).await
             }
         },
@@ -425,7 +396,8 @@ pub async fn handle_messages(
         // Add X-Request-ID header to response
         response.headers_mut().insert(
             "X-Request-ID",
-            request_id.parse().unwrap_or_else(|_| "invalid".parse().unwrap()),
+            axum::http::HeaderValue::from_str(&request_id)
+                .unwrap_or_else(|_| axum::http::HeaderValue::from_static("invalid-request-id")),
         );
 
         Ok(response)

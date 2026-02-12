@@ -129,11 +129,16 @@ impl LlmProvider for BedrockProvider {
 
 /// URL-encode a path segment for Bedrock model IDs (e.g. colons in model IDs).
 fn url_encode_path(s: &str) -> String {
-    // Encode everything except unreserved characters and forward slashes
+    // Encode everything except unreserved characters (RFC 3986)
     s.chars()
         .map(|c| match c {
             'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-            _ => format!("%{:02X}", c as u32),
+            _ => {
+                // Percent-encode each UTF-8 byte for correct multi-byte handling
+                let mut buf = [0u8; 4];
+                let bytes = c.encode_utf8(&mut buf).as_bytes();
+                bytes.iter().map(|b| format!("%{:02X}", b)).collect::<String>()
+            }
         })
         .collect()
 }
@@ -251,4 +256,28 @@ fn sigv4_sign(
         result.push(("x-amz-security-token".to_string(), token.to_string()));
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_url_encode_path_ascii_special_chars() {
+        // Colons in Bedrock model IDs must be percent-encoded
+        assert_eq!(url_encode_path("anthropic.claude-3:0"), "anthropic.claude-3%3A0");
+        // Spaces
+        assert_eq!(url_encode_path("a b"), "a%20b");
+        // Unreserved chars pass through
+        assert_eq!(url_encode_path("abc-123_v2.0~x"), "abc-123_v2.0~x");
+    }
+
+    #[test]
+    fn test_url_encode_path_multibyte_utf8() {
+        // Multi-byte UTF-8: each byte must be individually percent-encoded
+        // '中' is U+4E2D → UTF-8 bytes: E4 B8 AD
+        assert_eq!(url_encode_path("中"), "%E4%B8%AD");
+        // Emoji '😀' is U+1F600 → UTF-8 bytes: F0 9F 98 80
+        assert_eq!(url_encode_path("😀"), "%F0%9F%98%80");
+    }
 }

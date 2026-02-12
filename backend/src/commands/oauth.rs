@@ -66,7 +66,8 @@ pub async fn login(provider: String, port: u16) -> Result<()> {
         manual_callback_flow(
             provider,
             oauth_provider,
-            token_store
+            token_store,
+            oauth_config,
         ).await
     } else {
         // 使用本地 callback server 流程
@@ -84,6 +85,7 @@ async fn manual_callback_flow(
     provider: String,
     oauth_provider: &Box<dyn llm_gateway::oauth::providers::traits::OAuthProvider>,
     token_store: Arc<TokenStore>,
+    oauth_config: &llm_gateway::config::OAuthProviderConfig,
 ) -> Result<()> {
     println!("{} {}", "[1/3]".cyan().bold(), "Generating PKCE parameters...");
     let pkce_params = generate_pkce_params();
@@ -144,16 +146,28 @@ async fn manual_callback_flow(
     let parsed_url = url::Url::parse(callback_url)
         .map_err(|e| anyhow::anyhow!("Invalid URL format: {}", e))?;
 
-    // Validate domain (basic security check)
-    if let Some(domain) = parsed_url.domain() {
-        if !domain.contains("claude.com") && !domain.contains("anthropic.com") {
-            return Err(anyhow::anyhow!(
-                "Invalid callback URL domain '{}' - expected claude.com or anthropic.com",
-                domain
-            ));
-        }
-    } else {
-        return Err(anyhow::anyhow!("Callback URL missing domain"));
+    // Validate callback URL host against configured redirect_uri
+    let expected_redirect = url::Url::parse(&oauth_config.redirect_uri)
+        .map_err(|e| anyhow::anyhow!("Invalid redirect_uri in config: {}", e))?;
+    let expected_host = expected_redirect.host_str()
+        .ok_or_else(|| anyhow::anyhow!("redirect_uri in config has no host"))?;
+
+    // Validate scheme: HTTPS required, except localhost allows HTTP
+    let is_localhost = expected_host == "localhost" || expected_host == "127.0.0.1";
+    if !is_localhost && parsed_url.scheme() != "https" {
+        return Err(anyhow::anyhow!(
+            "Callback URL must use HTTPS (got '{}')", parsed_url.scheme()
+        ));
+    }
+
+    let actual_host = parsed_url.host_str()
+        .ok_or_else(|| anyhow::anyhow!("Callback URL missing host"))?;
+
+    if actual_host != expected_host {
+        return Err(anyhow::anyhow!(
+            "Invalid callback URL host '{}' - expected '{}'",
+            actual_host, expected_host
+        ));
     }
 
     // Extract query parameters

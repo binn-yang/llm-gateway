@@ -1,62 +1,16 @@
+// Gemini generate_content has been migrated to the LlmProvider trait.
+// See provider_trait.rs::GeminiProvider for the new implementation.
+//
+// Remaining functions (count_tokens, list_models, get_model) are Gemini-specific
+// helper endpoints that don't fit the LlmProvider trait pattern.
+
 use crate::{
     config::ProviderInstanceConfig,
     error::AppError,
-    models::gemini::{CountTokensRequest, CountTokensResponse, GenerateContentRequest, GetModelResponse, ListModelsResponse},
+    models::gemini::{CountTokensRequest, CountTokensResponse, GetModelResponse, ListModelsResponse},
 };
 use reqwest::Client;
 use std::time::Duration;
-
-/// Call Gemini Generate Content API
-/// Note: Model name is part of the URL path
-pub async fn generate_content(
-    client: &Client,
-    config: &ProviderInstanceConfig,
-    model: &str,
-    request: GenerateContentRequest,
-    stream: bool,
-    oauth_token: Option<&str>,
-) -> Result<reqwest::Response, AppError> {
-    // Gemini API format: /v1beta/models/{model}:generateContent
-    let url = format!("{}/models/{}:generateContent", config.base_url, model);
-
-    let mut builder = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .timeout(Duration::from_secs(config.timeout_seconds));
-
-    // Add authentication - OAuth token or API key
-    if let Some(token) = oauth_token {
-        builder = builder.header("Authorization", format!("Bearer {}", token));
-    } else if let Some(api_key) = &config.api_key {
-        builder = builder.query(&[("key", api_key.as_str())]);
-    } else {
-        return Err(AppError::ConfigError(
-            "No authentication credentials provided".to_string()
-        ));
-    }
-
-    // Add streaming parameter if needed
-    if stream {
-        builder = builder.query(&[("alt", "sse")]);
-    }
-
-    let response = builder.json(&request).send().await?;
-
-    // Check for HTTP errors
-    if !response.status().is_success() {
-        let status = response.status();
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(AppError::UpstreamError {
-            status,
-            message: error_text,
-        });
-    }
-
-    Ok(response)
-}
 
 /// Call Gemini Count Tokens API
 pub async fn count_tokens(
@@ -182,7 +136,7 @@ pub async fn get_model(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::gemini::{Content, Part};
+    use crate::models::gemini::{Content, GenerateContentRequest, Part};
 
     fn create_test_config() -> ProviderInstanceConfig {
         ProviderInstanceConfig {

@@ -145,12 +145,13 @@ pub async fn handle_generate_content_any(
         );
     }
 
-    // 获取 Gemini LoadBalancer
+    // 获取 Gemini LoadBalancer 和 Provider
     let registry = state.registry.load();
     let registered = registry
         .get("gemini")
         .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?;
     let load_balancer = registered.load_balancer.clone();
+    let provider = registered.provider.clone();
 
     // 使用 execute_with_session 执行请求（粘性会话 + 故障转移）
     let http_client = state.http_client.clone();
@@ -163,48 +164,25 @@ pub async fn handle_generate_content_any(
             let gemini_request = request.clone();
             let oauth_manager = oauth_manager.clone();
             let model_clone = model.clone();
+            let provider = provider.clone();
             async move {
-                let config = instance.config
-                    .as_any()
-                    .downcast_ref::<crate::config::ProviderInstanceConfig>()
-                    .ok_or_else(|| AppError::InternalError("Invalid instance config type".to_string()))?;
+                let oauth_token = crate::handlers::common::resolve_oauth_token(
+                    instance.config.as_ref(), &oauth_manager,
+                ).await?;
 
-                // 获取 OAuth token（如需要）
-                let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
-                    if let Some(ref oauth_provider_name) = config.oauth_provider {
-                        if let Some(ref manager) = oauth_manager {
-                            match manager.get_valid_token(oauth_provider_name).await {
-                                Ok(token) => {
-                                    tracing::debug!(
-                                        provider = %oauth_provider_name,
-                                        "Retrieved OAuth token for Gemini API request"
-                                    );
-                                    Some(token.access_token)
-                                }
-                                Err(e) => return Err(e),
-                            }
-                        } else {
-                            return Err(AppError::ConfigError(
-                                "OAuth mode enabled but OAuth manager not initialized".to_string()
-                            ));
-                        }
-                    } else {
-                        return Err(AppError::ConfigError(
-                            "OAuth mode enabled but oauth_provider not specified".to_string()
-                        ));
-                    }
-                } else {
-                    None
-                };
+                let body = serde_json::to_value(&gemini_request)
+                    .map_err(|e| AppError::ConversionError(format!("Failed to serialize request: {}", e)))?;
 
-                // 调用 Gemini API
-                providers::gemini::generate_content(
+                crate::handlers::common::send_and_check(
+                    provider.as_ref(),
                     &http_client,
-                    config,
-                    &model_clone,
-                    gemini_request,
-                    false, // stream = false
-                    oauth_token.as_deref(),
+                    instance.config.as_ref(),
+                    crate::provider_trait::UpstreamRequest {
+                        body,
+                        model: model_clone,
+                        stream: false,
+                        oauth_token,
+                    },
                 ).await
             }
         },
@@ -316,7 +294,8 @@ pub async fn handle_generate_content_any(
     // 添加 X-Request-ID 头
     response.headers_mut().insert(
         "X-Request-ID",
-        request_id.parse().unwrap_or_else(|_| "invalid".parse().unwrap()),
+        axum::http::HeaderValue::from_str(&request_id)
+            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("invalid-request-id")),
     );
 
     Ok(response)
@@ -410,12 +389,13 @@ pub async fn handle_stream_generate_content_any(
         );
     }
 
-    // 获取 Gemini LoadBalancer
+    // 获取 Gemini LoadBalancer 和 Provider
     let registry = state.registry.load();
     let registered = registry
         .get("gemini")
         .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?;
     let load_balancer = registered.load_balancer.clone();
+    let provider = registered.provider.clone();
 
     // 使用 execute_with_session 执行请求
     let http_client = state.http_client.clone();
@@ -428,40 +408,25 @@ pub async fn handle_stream_generate_content_any(
             let gemini_request = request.clone();
             let oauth_manager = oauth_manager.clone();
             let model_clone = model.clone();
+            let provider = provider.clone();
             async move {
-                let config = instance.config
-                    .as_any()
-                    .downcast_ref::<crate::config::ProviderInstanceConfig>()
-                    .ok_or_else(|| AppError::InternalError("Invalid instance config type".to_string()))?;
+                let oauth_token = crate::handlers::common::resolve_oauth_token(
+                    instance.config.as_ref(), &oauth_manager,
+                ).await?;
 
-                let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
-                    if let Some(ref oauth_provider_name) = config.oauth_provider {
-                        if let Some(ref manager) = oauth_manager {
-                            match manager.get_valid_token(oauth_provider_name).await {
-                                Ok(token) => Some(token.access_token),
-                                Err(e) => return Err(e),
-                            }
-                        } else {
-                            return Err(AppError::ConfigError(
-                                "OAuth mode enabled but OAuth manager not initialized".to_string()
-                            ));
-                        }
-                    } else {
-                        return Err(AppError::ConfigError(
-                            "OAuth mode enabled but oauth_provider not specified".to_string()
-                        ));
-                    }
-                } else {
-                    None
-                };
+                let body = serde_json::to_value(&gemini_request)
+                    .map_err(|e| AppError::ConversionError(format!("Failed to serialize request: {}", e)))?;
 
-                providers::gemini::generate_content(
+                crate::handlers::common::send_and_check(
+                    provider.as_ref(),
                     &http_client,
-                    config,
-                    &model_clone,
-                    gemini_request,
-                    true, // stream = true
-                    oauth_token.as_deref(),
+                    instance.config.as_ref(),
+                    crate::provider_trait::UpstreamRequest {
+                        body,
+                        model: model_clone,
+                        stream: true,
+                        oauth_token,
+                    },
                 ).await
             }
         },
@@ -672,7 +637,8 @@ pub async fn handle_count_tokens(
     let mut resp = Json(session_result.result?).into_response();
     resp.headers_mut().insert(
         "X-Request-ID",
-        request_id.parse().unwrap_or_else(|_| "invalid".parse().unwrap()),
+        axum::http::HeaderValue::from_str(&request_id)
+            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("invalid-request-id")),
     );
     Ok(resp)
 }
@@ -752,7 +718,8 @@ pub async fn handle_list_models(
     let mut resp = Json(response).into_response();
     resp.headers_mut().insert(
         "X-Request-ID",
-        request_id.parse().unwrap_or_else(|_| "invalid".parse().unwrap()),
+        axum::http::HeaderValue::from_str(&request_id)
+            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("invalid-request-id")),
     );
     Ok(resp)
 }
@@ -839,7 +806,8 @@ pub async fn handle_get_model(
     let mut resp = Json(response).into_response();
     resp.headers_mut().insert(
         "X-Request-ID",
-        request_id.parse().unwrap_or_else(|_| "invalid".parse().unwrap()),
+        axum::http::HeaderValue::from_str(&request_id)
+            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("invalid-request-id")),
     );
     Ok(resp)
 }

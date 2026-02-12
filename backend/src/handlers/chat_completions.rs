@@ -4,7 +4,6 @@ use crate::{
     error::AppError,
     models::openai::{ChatCompletionRequest, ChatCompletionResponse},
     observability::{RequestEvent, RequestLogger},
-    providers,
     registry::ProviderRegistry,
     retry::RequestStatus,
     router::ModelRouter,
@@ -141,7 +140,8 @@ pub async fn handle_chat_completions(
     // Add X-Request-ID header to response
     response.headers_mut().insert(
         "X-Request-ID",
-        request_id.parse().unwrap_or_else(|_| "invalid".parse().unwrap()),
+        axum::http::HeaderValue::from_str(&request_id)
+            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("invalid-request-id")),
     );
 
     Ok(response)
@@ -157,12 +157,13 @@ async fn handle_openai_request(
     start: Instant,
     span: &tracing::Span,
 ) -> Result<Response, AppError> {
-    // Get LoadBalancer for OpenAI provider
+    // Get LoadBalancer and Provider for OpenAI
     let registry = state.registry.load();
     let registered = registry
         .get("openai")
         .ok_or_else(|| AppError::ProviderDisabled("OpenAI provider not configured".to_string()))?;
     let load_balancer = registered.load_balancer.clone();
+    let provider = registered.provider.clone();
 
     // Execute request with sticky session (returns SessionResult)
     let request_clone = request.clone();
@@ -175,54 +176,25 @@ async fn handle_openai_request(
             let http_client = http_client.clone();
             let request_clone = request_clone.clone();
             let oauth_manager = oauth_manager.clone();
+            let provider = provider.clone();
             async move {
-                // Extract config from the instance
-                let config = instance.config
-                    .as_any()
-                    .downcast_ref::<crate::config::ProviderInstanceConfig>()
-                    .ok_or_else(|| AppError::InternalError("Invalid instance config type".to_string()))?;
+                let oauth_token = crate::handlers::common::resolve_oauth_token(
+                    instance.config.as_ref(), &oauth_manager,
+                ).await?;
 
-                // Get OAuth token if needed
-                let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
-                    if let Some(ref oauth_provider_name) = config.oauth_provider {
-                        if let Some(ref manager) = oauth_manager {
-                            match manager.get_valid_token(oauth_provider_name).await {
-                                Ok(token) => {
-                                    tracing::debug!(
-                                        provider = %oauth_provider_name,
-                                        "Retrieved OAuth token for OpenAI request"
-                                    );
-                                    Some(token.access_token)
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        provider = %oauth_provider_name,
-                                        error = %e,
-                                        "Failed to get OAuth token"
-                                    );
-                                    return Err(e);
-                                }
-                            }
-                        } else {
-                            return Err(AppError::ConfigError(
-                                "OAuth mode enabled but OAuth manager not initialized".to_string()
-                            ));
-                        }
-                    } else {
-                        return Err(AppError::ConfigError(
-                            "OAuth mode enabled but oauth_provider not specified".to_string()
-                        ));
-                    }
-                } else {
-                    None
-                };
+                let body = serde_json::to_value(&request_clone)
+                    .map_err(|e| AppError::ConversionError(format!("Failed to serialize request: {}", e)))?;
 
-                // Call OpenAI API with OAuth token if available
-                providers::openai::chat_completions(
+                crate::handlers::common::send_and_check(
+                    provider.as_ref(),
                     &http_client,
-                    config,
-                    request_clone,
-                    oauth_token.as_deref()
+                    instance.config.as_ref(),
+                    crate::provider_trait::UpstreamRequest {
+                        body,
+                        model: request_clone.model.clone(),
+                        stream: request_clone.stream.unwrap_or(false),
+                        oauth_token,
+                    },
                 ).await
             }
         },
@@ -469,12 +441,13 @@ async fn handle_anthropic_request(
         "Converted OpenAI request to Anthropic format"
     );
 
-    // Get LoadBalancer for Anthropic provider
+    // Get LoadBalancer and Provider for Anthropic
     let registry = state.registry.load();
     let registered = registry
         .get("anthropic")
         .ok_or_else(|| AppError::ProviderDisabled("Anthropic provider not configured".to_string()))?;
     let load_balancer = registered.load_balancer.clone();
+    let provider = registered.provider.clone();
 
     // Execute request with sticky session (returns SessionResult)
     let http_client = state.http_client.clone();
@@ -486,57 +459,33 @@ async fn handle_anthropic_request(
             let http_client = http_client.clone();
             let mut anthropic_request = anthropic_request.clone();
             let oauth_manager = oauth_manager.clone();
+            let provider = provider.clone();
             async move {
-                // Extract config from the instance
-                let config = instance.config
+                // Apply automatic caching (requires downcast to AnthropicInstanceConfig)
+                if let Some(anthropic_config) = instance.config
                     .as_any()
                     .downcast_ref::<crate::config::AnthropicInstanceConfig>()
-                    .ok_or_else(|| AppError::InternalError("Invalid instance config type".to_string()))?;
+                {
+                    converters::openai_to_anthropic::apply_auto_caching(&mut anthropic_request, &anthropic_config.cache);
+                }
 
-                // Apply automatic caching based on configuration
-                converters::openai_to_anthropic::apply_auto_caching(&mut anthropic_request, &config.cache);
+                let oauth_token = crate::handlers::common::resolve_oauth_token(
+                    instance.config.as_ref(), &oauth_manager,
+                ).await?;
 
-                // Get OAuth token if needed
-                let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
-                    if let Some(ref oauth_provider_name) = config.oauth_provider {
-                        if let Some(ref manager) = oauth_manager {
-                            match manager.get_valid_token(oauth_provider_name).await {
-                                Ok(token) => {
-                                    tracing::debug!(
-                                        provider = %oauth_provider_name,
-                                        "Retrieved OAuth token for Anthropic request"
-                                    );
-                                    Some(token.access_token)
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        provider = %oauth_provider_name,
-                                        error = %e,
-                                        "Failed to get OAuth token"
-                                    );
-                                    return Err(e);
-                                }
-                            }
-                        } else {
-                            return Err(AppError::ConfigError(
-                                "OAuth mode enabled but OAuth manager not initialized".to_string()
-                            ));
-                        }
-                    } else {
-                        return Err(AppError::ConfigError(
-                            "OAuth mode enabled but oauth_provider not specified".to_string()
-                        ));
-                    }
-                } else {
-                    None
-                };
+                let body = serde_json::to_value(&anthropic_request)
+                    .map_err(|e| AppError::ConversionError(format!("Failed to serialize request: {}", e)))?;
 
-                // Call Anthropic API with OAuth token if available
-                providers::anthropic::create_message(
+                crate::handlers::common::send_and_check(
+                    provider.as_ref(),
                     &http_client,
-                    config,
-                    anthropic_request,
-                    oauth_token.as_deref()
+                    instance.config.as_ref(),
+                    crate::provider_trait::UpstreamRequest {
+                        body,
+                        model: anthropic_request.model.clone(),
+                        stream: anthropic_request.stream.unwrap_or(false),
+                        oauth_token,
+                    },
                 ).await
             }
         },
@@ -732,12 +681,13 @@ async fn handle_gemini_request(
         "Converted OpenAI request to Gemini format"
     );
 
-    // Get LoadBalancer for Gemini provider
+    // Get LoadBalancer and Provider for Gemini
     let registry = state.registry.load();
     let registered = registry
         .get("gemini")
         .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?;
     let load_balancer = registered.load_balancer.clone();
+    let provider = registered.provider.clone();
 
     // Execute request with sticky session (returns SessionResult)
     let http_client = state.http_client.clone();
@@ -751,58 +701,26 @@ async fn handle_gemini_request(
             let model_str = model_str.clone();
             let gemini_request = gemini_request.clone();
             let oauth_manager = oauth_manager.clone();
+            let provider = provider.clone();
             async move {
-                // Extract config from the instance
-                let config = instance.config
-                    .as_any()
-                    .downcast_ref::<crate::config::ProviderInstanceConfig>()
-                    .ok_or_else(|| AppError::InternalError("Invalid instance config type".to_string()))?;
+                let oauth_token = crate::handlers::common::resolve_oauth_token(
+                    instance.config.as_ref(), &oauth_manager,
+                ).await?;
 
-                // Get OAuth token if needed
-                let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
-                    if let Some(ref oauth_provider_name) = config.oauth_provider {
-                        if let Some(ref manager) = oauth_manager {
-                            match manager.get_valid_token(oauth_provider_name).await {
-                                Ok(token) => {
-                                    tracing::debug!(
-                                        provider = %oauth_provider_name,
-                                        "Retrieved OAuth token for Gemini request"
-                                    );
-                                    Some(token.access_token)
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        provider = %oauth_provider_name,
-                                        error = %e,
-                                        "Failed to get OAuth token"
-                                    );
-                                    return Err(e);
-                                }
-                            }
-                        } else {
-                            return Err(AppError::ConfigError(
-                                "OAuth mode enabled but OAuth manager not initialized".to_string()
-                            ));
-                        }
-                    } else {
-                        return Err(AppError::ConfigError(
-                            "OAuth mode enabled but oauth_provider not specified".to_string()
-                        ));
-                    }
-                } else {
-                    None
-                };
+                let body = serde_json::to_value(&gemini_request)
+                    .map_err(|e| AppError::ConversionError(format!("Failed to serialize request: {}", e)))?;
 
-                // Call Gemini API with OAuth token if available
-                providers::gemini::generate_content(
+                crate::handlers::common::send_and_check(
+                    provider.as_ref(),
                     &http_client,
-                    config,
-                    &model_str,
-                    gemini_request,
-                    is_stream,
-                    oauth_token.as_deref()
-                )
-                .await
+                    instance.config.as_ref(),
+                    crate::provider_trait::UpstreamRequest {
+                        body,
+                        model: model_str,
+                        stream: is_stream,
+                        oauth_token,
+                    },
+                ).await
             }
         },
     )

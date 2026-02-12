@@ -15,6 +15,42 @@ use std::os::unix::fs::PermissionsExt;
 use tokio::fs;
 use tokio::sync::RwLock;
 
+/// Get a machine-specific identifier for key derivation
+fn get_machine_id() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        // macOS: extract IOPlatformUUID from ioreg
+        if let Ok(output) = std::process::Command::new("ioreg")
+            .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if line.contains("IOPlatformUUID") {
+                    // Format: "IOPlatformUUID" = "XXXXXXXX-XXXX-..."
+                    if let Some(uuid) = line.split('"').nth(3) {
+                        return uuid.to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Linux: read /etc/machine-id
+        if let Ok(id) = std::fs::read_to_string("/etc/machine-id") {
+            let id = id.trim().to_string();
+            if !id.is_empty() {
+                return id;
+            }
+        }
+    }
+
+    // Fallback: empty string (still has hostname + username)
+    String::new()
+}
+
 /// Token storage with encryption
 #[derive(Debug)]
 pub struct TokenStore {
@@ -52,7 +88,7 @@ struct EncryptedToken {
 impl TokenStore {
     /// Create a new token store with encryption
     pub async fn new(storage_path: PathBuf) -> Result<Self, AppError> {
-        let (encryption_key, salt) = if storage_path.exists() {
+        let (encryption_key, salt, needs_migration) = if storage_path.exists() {
             let content = fs::read_to_string(&storage_path).await
                 .map_err(|e| AppError::OAuthError {
                     message: format!("Failed to read token file: {}", e),
@@ -61,19 +97,35 @@ impl TokenStore {
                 .map_err(|e| AppError::OAuthError {
                     message: format!("Failed to parse token file: {}", e),
                 })?;
-            
+
             let salt_str = storage.salt.ok_or_else(|| AppError::OAuthError {
                 message: "Token file format outdated (v1.0). Please re-login with 'llm-gateway oauth login <provider>'.".to_string(),
             })?;
             let salt = SaltString::from_b64(&salt_str).map_err(|e| AppError::OAuthError {
                 message: format!("Invalid salt format: {}", e),
             })?;
-            let key = Self::derive_encryption_key(&salt)?;
-            (key, salt)
+
+            match storage.version.as_str() {
+                "3.0" => {
+                    // Current version, use v3 key directly
+                    let key = Self::derive_encryption_key(&salt)?;
+                    (key, salt, false)
+                }
+                "2.0" => {
+                    // v2 → v3 migration: load with old key first, will re-encrypt after
+                    let key = Self::derive_encryption_key_v2(&salt)?;
+                    (key, salt, true)
+                }
+                v => {
+                    return Err(AppError::OAuthError {
+                        message: format!("Unsupported token file version '{}'. Please re-login with 'llm-gateway oauth login <provider>'.", v),
+                    });
+                }
+            }
         } else {
             let salt = SaltString::generate(&mut OsRng);
             let key = Self::derive_encryption_key(&salt)?;
-            (key, salt)
+            (key, salt, false)
         };
 
         let mut store = Self {
@@ -87,11 +139,19 @@ impl TokenStore {
             store.load_tokens().await?;
         }
 
+        // v2 → v3 migration: re-encrypt all tokens with new key
+        if needs_migration {
+            tracing::info!("Migrating token store from v2.0 to v3.0 (enhanced key derivation)");
+            store.encryption_key = Self::derive_encryption_key(&store.salt)?;
+            store.save_tokens().await?;
+            tracing::info!("Token store migration to v3.0 complete");
+        }
+
         Ok(store)
     }
 
-    /// Derive encryption key from machine-specific data and salt
-    fn derive_encryption_key(salt: &SaltString) -> Result<Vec<u8>, AppError> {
+    /// Derive encryption key from machine-specific data and salt (v2 - hostname only, kept for migration)
+    fn derive_encryption_key_v2(salt: &SaltString) -> Result<Vec<u8>, AppError> {
         let hostname = hostname::get()
             .map_err(|e| AppError::OAuthError {
                 message: format!("Failed to get hostname: {}", e),
@@ -103,6 +163,38 @@ impl TokenStore {
 
         let password_hash = argon2
             .hash_password(hostname.as_bytes(), salt)
+            .map_err(|e| AppError::OAuthError {
+                message: format!("Failed to derive encryption key: {}", e),
+            })?;
+
+        let hash_bytes = password_hash.hash.ok_or_else(|| AppError::OAuthError {
+            message: "Failed to extract hash bytes".to_string(),
+        })?;
+
+        Ok(hash_bytes.as_bytes()[..32].to_vec())
+    }
+
+    /// Derive encryption key from machine-specific data and salt (v3 - hostname + username + machine-id)
+    fn derive_encryption_key(salt: &SaltString) -> Result<Vec<u8>, AppError> {
+        let hostname = hostname::get()
+            .map_err(|e| AppError::OAuthError {
+                message: format!("Failed to get hostname: {}", e),
+            })?
+            .to_string_lossy()
+            .to_string();
+
+        let username = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        let machine_id = get_machine_id();
+
+        let password = format!("{}:{}:{}", hostname, username, machine_id);
+
+        let argon2 = Argon2::default();
+
+        let password_hash = argon2
+            .hash_password(password.as_bytes(), salt)
             .map_err(|e| AppError::OAuthError {
                 message: format!("Failed to derive encryption key: {}", e),
             })?;
@@ -214,7 +306,7 @@ impl TokenStore {
         }
 
         let storage = TokenStorage {
-            version: "2.0".to_string(),
+            version: "3.0".to_string(),
             salt: Some(self.salt.to_string()),
             tokens: encrypted_tokens,
         };
