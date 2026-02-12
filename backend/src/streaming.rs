@@ -632,6 +632,77 @@ pub fn create_gemini_sse_stream_with_tracker(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+/// 创建原生 Gemini SSE 流（透传模式）
+/// 不做协议转换，直接转发 Gemini SSE 事件
+///
+/// 此函数从 SSE 流中提取 usage_metadata（在最后一个 chunk 中）
+/// 并透传所有数据到客户端。
+pub fn create_native_gemini_sse_stream_with_tracker(
+    response: reqwest::Response,
+    tracker: StreamingUsageTracker,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    use std::sync::{Arc, Mutex};
+
+    let buffer = Arc::new(Mutex::new(String::new()));
+
+    let stream = response.bytes_stream().flat_map(move |chunk_result| {
+        let buffer = buffer.clone();
+        let tracker = tracker.clone();
+
+        futures::stream::iter(match chunk_result {
+            Ok(bytes) => {
+                let chunk_text = String::from_utf8_lossy(&bytes).to_string();
+                let mut events = Vec::new();
+
+                // Append to buffer
+                let mut buf = buffer.lock().unwrap();
+                buf.push_str(&chunk_text);
+
+                // Process complete SSE events (terminated by double newline)
+                while let Some(event_end) = buf.find("\n\n") {
+                    let event_text = buf[..event_end].to_string();
+                    *buf = buf[event_end + 2..].to_string(); // +2 to skip "\n\n"
+
+                    // Accumulate chunk for body logging
+                    tracker.accumulate_chunk(&event_text);
+
+                    // Parse Gemini SSE format: "data: {...}\n\n"
+                    for line in event_text.lines() {
+                        if let Some(data) = line.strip_prefix("data: ") {
+                            // 尝试提取 usage_metadata（通常在最后一个 chunk）
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                                // 检查是否包含 usage_metadata（通常在最后一个 chunk）
+                                if let Some(usage) = json.get("usageMetadata") {
+                                    let prompt_tokens = usage.get("promptTokenCount").and_then(|v| v.as_u64());
+                                    let candidates_tokens = usage.get("candidatesTokenCount").and_then(|v| v.as_u64());
+
+                                    // 检查两个值是否都存在
+                                    if let (Some(prompt), Some(candidates)) = (prompt_tokens, candidates_tokens) {
+                                        // 提取到完整的 token 计数
+                                        tracker.set_usage(prompt, candidates);
+                                    }
+                                }
+                            }
+
+                            // 透传原始数据
+                            events.push(Ok(Event::default().data(data.to_string())));
+                        }
+                    }
+                }
+
+                drop(buf); // Release lock before returning
+                events
+            }
+            Err(e) => {
+                tracing::error!("Native Gemini stream error: {}", e);
+                vec![Ok(Event::default().data(""))]
+            }
+        })
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

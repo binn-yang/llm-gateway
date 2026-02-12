@@ -1,7 +1,7 @@
 use crate::{
     config::ProviderInstanceConfig,
     error::AppError,
-    models::gemini::GenerateContentRequest,
+    models::gemini::{CountTokensRequest, CountTokensResponse, GenerateContentRequest, GetModelResponse, ListModelsResponse},
 };
 use reqwest::Client;
 use std::time::Duration;
@@ -56,6 +56,127 @@ pub async fn generate_content(
     }
 
     Ok(response)
+}
+
+/// Call Gemini Count Tokens API
+pub async fn count_tokens(
+    client: &Client,
+    config: &ProviderInstanceConfig,
+    model: &str,
+    request: &CountTokensRequest,
+    oauth_token: Option<&str>,
+) -> Result<CountTokensResponse, AppError> {
+    let url = format!("{}/models/{}:countTokens", config.base_url, model);
+
+    let mut builder = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .timeout(Duration::from_secs(config.timeout_seconds));
+
+    if let Some(token) = oauth_token {
+        builder = builder.header("Authorization", format!("Bearer {}", token));
+    } else if let Some(api_key) = &config.api_key {
+        builder = builder.query(&[("key", api_key.as_str())]);
+    } else {
+        return Err(AppError::ConfigError(
+            "No authentication credentials provided".to_string()
+        ));
+    }
+
+    let response = builder.json(&request).send().await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(AppError::UpstreamError {
+            status,
+            message: error_text,
+        });
+    }
+
+    Ok(response.json().await?)
+}
+
+/// List all available models
+pub async fn list_models(
+    client: &Client,
+    config: &ProviderInstanceConfig,
+    oauth_token: Option<&str>,
+) -> Result<ListModelsResponse, AppError> {
+    let url = format!("{}/models", config.base_url.trim_end_matches('/'));
+
+    let mut builder = client
+        .get(&url)
+        .timeout(Duration::from_secs(config.timeout_seconds));
+
+    if let Some(token) = oauth_token {
+        builder = builder.header("Authorization", format!("Bearer {}", token));
+    } else if let Some(api_key) = &config.api_key {
+        builder = builder.query(&[("key", api_key.as_str())]);
+    } else {
+        return Err(AppError::ConfigError(
+            "No authentication credentials provided".to_string()
+        ));
+    }
+
+    let response = builder.send().await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(AppError::UpstreamError {
+            status,
+            message: error_text,
+        });
+    }
+
+    Ok(response.json().await?)
+}
+
+/// Get a single model's details
+pub async fn get_model(
+    client: &Client,
+    config: &ProviderInstanceConfig,
+    model: &str,
+    oauth_token: Option<&str>,
+) -> Result<GetModelResponse, AppError> {
+    let url = format!("{}/models/{}", config.base_url.trim_end_matches('/'), model);
+
+    let mut builder = client
+        .get(&url)
+        .timeout(Duration::from_secs(config.timeout_seconds));
+
+    if let Some(token) = oauth_token {
+        builder = builder.header("Authorization", format!("Bearer {}", token));
+    } else if let Some(api_key) = &config.api_key {
+        builder = builder.query(&[("key", api_key.as_str())]);
+    } else {
+        return Err(AppError::ConfigError(
+            "No authentication credentials provided".to_string()
+        ));
+    }
+
+    let response = builder.send().await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(AppError::UpstreamError {
+            status,
+            message: error_text,
+        });
+    }
+
+    Ok(response.json().await?)
 }
 
 #[cfg(test)]

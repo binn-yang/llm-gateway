@@ -1,10 +1,8 @@
-use llm_gateway::{
-    config::{
-        ApiKeyConfig, AnthropicInstanceConfig, CacheConfig, Config, DiscoveryConfig,
-        MetricsSnapshotConfig, ObservabilityConfig, ObservabilityPerformanceConfig,
-        ObservabilityRetentionConfig, ProviderInstanceConfig, ProvidersConfig,
-        RoutingConfig, ServerConfig,
-    },
+use llm_gateway::config::{
+    AnthropicInstanceConfig, ApiKeyConfig, BodyLoggingConfig, CacheConfig, Config, DiscoveryConfig,
+    MetricsSnapshotConfig, ObservabilityConfig, ObservabilityPerformanceConfig,
+    ObservabilityRetentionConfig, ProviderInstanceConfig, ProvidersConfig, QuotaRefreshConfig,
+    RoutingConfig, ServerConfig,
 };
 use std::collections::HashMap;
 
@@ -42,7 +40,7 @@ pub fn create_stress_test_config(
             api_key: Some("mock-key".to_string()),
             base_url: mock_openai_url.to_string(),
             timeout_seconds: 30,
-            priority: (i / (num_instances_per_provider / 3).max(1)) as u32 + 1,  // 均匀分布优先级
+            priority: (i / (num_instances_per_provider / 3).max(1)) as u32 + 1, // 均匀分布优先级
             failure_timeout_seconds: 60,
             weight: 100,
             auth_mode: llm_gateway::config::AuthMode::Bearer,
@@ -75,8 +73,8 @@ pub fn create_stress_test_config(
     Config {
         server: ServerConfig {
             host: "127.0.0.1".to_string(),
-            port: 0,  // 使用随机可用端口
-            log_level: "warn".to_string(),  // 减少日志噪音
+            port: 0,                       // 使用随机可用端口
+            log_level: "warn".to_string(), // 减少日志噪音
             log_format: "json".to_string(),
         },
         api_keys,
@@ -84,7 +82,7 @@ pub fn create_stress_test_config(
             rules: routing_rules,
             default_provider: Some("openai".to_string()),
             discovery: DiscoveryConfig {
-                enabled: false,  // 压力测试时禁用 discovery
+                enabled: false, // 压力测试时禁用 discovery
                 cache_ttl_seconds: 3600,
                 refresh_on_startup: false,
                 providers_with_listing: vec![],
@@ -97,7 +95,7 @@ pub fn create_stress_test_config(
         },
         oauth_providers: vec![],
         observability: ObservabilityConfig {
-            enabled: false,  // 压力测试时禁用观测
+            enabled: false, // 压力测试时禁用观测
             database_path: ":memory:".to_string(),
             performance: ObservabilityPerformanceConfig {
                 batch_size: 100,
@@ -114,14 +112,14 @@ pub fn create_stress_test_config(
                 enabled: false,
                 interval_seconds: 300,
             },
+            body_logging: BodyLoggingConfig::default(),
+            quota_refresh: QuotaRefreshConfig::default(),
         },
     }
 }
 
 /// 创建单实例配置(用于基准延迟测试)
-pub fn create_single_instance_config(
-    mock_openai_url: &str,
-) -> Config {
+pub fn create_single_instance_config(mock_openai_url: &str) -> Config {
     create_stress_test_config(mock_openai_url, "", 1, 1)
 }
 
@@ -133,9 +131,7 @@ pub fn create_single_instance_config(
 /// - 实例 2: priority 2 (weight 100)
 ///
 /// 预期分布: 25%, 50%, 25%
-pub fn create_weighted_instance_config(
-    mock_url: &str,
-) -> Config {
+pub fn create_weighted_instance_config(mock_url: &str) -> Config {
     let mut routing_rules = HashMap::new();
     routing_rules.insert("gpt-".to_string(), "openai".to_string());
 
@@ -222,6 +218,8 @@ pub fn create_weighted_instance_config(
                 enabled: false,
                 interval_seconds: 300,
             },
+            body_logging: BodyLoggingConfig::default(),
+            quota_refresh: QuotaRefreshConfig::default(),
         },
     }
 }
@@ -229,10 +227,7 @@ pub fn create_weighted_instance_config(
 /// 创建故障转移测试配置
 ///
 /// 包含 primary 和 backup 实例,用于测试故障转移逻辑
-pub fn create_failover_config(
-    primary_url: &str,
-    backup_url: &str,
-) -> Config {
+pub fn create_failover_config(primary_url: &str, backup_url: &str) -> Config {
     let mut routing_rules = HashMap::new();
     routing_rules.insert("gpt-".to_string(), "openai".to_string());
 
@@ -266,8 +261,8 @@ pub fn create_failover_config(
                     api_key: Some("mock-key".to_string()),
                     base_url: primary_url.to_string(),
                     timeout_seconds: 30,
-                    priority: 1,  // 高优先级
-                    failure_timeout_seconds: 5,  // 快速恢复测试
+                    priority: 1,                // 高优先级
+                    failure_timeout_seconds: 5, // 快速恢复测试
                     weight: 100,
                     auth_mode: llm_gateway::config::AuthMode::Bearer,
                     oauth_provider: None,
@@ -278,7 +273,7 @@ pub fn create_failover_config(
                     api_key: Some("mock-key".to_string()),
                     base_url: backup_url.to_string(),
                     timeout_seconds: 30,
-                    priority: 2,  // 低优先级
+                    priority: 2, // 低优先级
                     failure_timeout_seconds: 5,
                     weight: 100,
                     auth_mode: llm_gateway::config::AuthMode::Bearer,
@@ -307,6 +302,8 @@ pub fn create_failover_config(
                 enabled: false,
                 interval_seconds: 300,
             },
+            body_logging: BodyLoggingConfig::default(),
+            quota_refresh: QuotaRefreshConfig::default(),
         },
     }
 }
@@ -317,17 +314,13 @@ mod tests {
 
     #[test]
     fn test_create_stress_test_config() {
-        let config = create_stress_test_config(
-            "http://mock-openai",
-            "http://mock-anthropic",
-            3,
-            10,
-        );
+        let config =
+            create_stress_test_config("http://mock-openai", "http://mock-anthropic", 3, 10);
 
         assert_eq!(config.api_keys.len(), 10);
         assert_eq!(config.providers.openai.len(), 3);
         assert_eq!(config.providers.anthropic.len(), 3);
-        assert_eq!(config.server.port, 0);  // 随机端口
+        assert_eq!(config.server.port, 0); // 随机端口
     }
 
     #[test]

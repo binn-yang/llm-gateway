@@ -207,6 +207,59 @@ pub struct UsageMetadata {
     pub total_token_count: u64,
 }
 
+/// countTokens 请求
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CountTokensRequest {
+    /// Contents to count tokens for
+    pub contents: Vec<Content>,
+    /// System instruction (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "systemInstruction")]
+    pub system_instruction: Option<SystemInstruction>,
+}
+
+/// countTokens 响应
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CountTokensResponse {
+    #[serde(rename = "totalTokens")]
+    pub total_tokens: u64,
+}
+
+/// 模型信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub name: String,
+    pub version: String,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    pub description: String,
+    #[serde(rename = "inputTokenLimit")]
+    pub input_token_limit: u32,
+    #[serde(rename = "outputTokenLimit")]
+    pub output_token_limit: u32,
+    #[serde(rename = "supportedGenerationMethods")]
+    pub supported_generation_methods: Vec<String>,
+    #[serde(rename = "temperature")]
+    pub temperature: Option<f32>,
+    #[serde(rename = "maxTemperature")]
+    pub max_temperature: Option<f32>,
+    #[serde(rename = "topK")]
+    pub top_k: Option<u32>,
+    #[serde(rename = "topP")]
+    pub top_p: Option<f32>,
+}
+
+/// listModels 响应
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListModelsResponse {
+    pub models: Vec<ModelInfo>,
+    #[serde(rename = "nextPageToken")]
+    pub next_page_token: Option<String>,
+}
+
+/// getModel 响应（单个模型详情）
+pub type GetModelResponse = ModelInfo;
+
 #[cfg(test)]
 mod tests {
     use super::*;

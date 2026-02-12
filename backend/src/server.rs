@@ -72,7 +72,7 @@ pub async fn start_server(config: Config) -> Result<()> {
             pricing_service.clone(),
             pool.clone(),
             "https://raw.githubusercontent.com/Wei-Shaw/claude-relay-service/price-mirror/model_prices_and_context_window.json".to_string(),
-            "backend/pricing/backups".to_string(),
+            "./data/pricing/backups".to_string(),
             std::time::Duration::from_secs(3600), // Update every hour
         ));
 
@@ -141,11 +141,8 @@ pub async fn start_server(config: Config) -> Result<()> {
             "Initializing OAuth support"
         );
 
-        // Create token store directory if it doesn't exist
-        let token_store_path = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?
-            .join(".llm-gateway")
-            .join("oauth_tokens.json");
+        // Create token store (in data directory)
+        let token_store_path = std::path::PathBuf::from("./data/oauth_tokens.json");
 
         if let Some(parent) = token_store_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -268,6 +265,24 @@ fn create_router(
             post(handlers::messages::handle_messages),
         )
         .route("/v1/models", get(handlers::models::list_models))
+        // Gemini 原生 API 路由 (v1beta)
+        // GET /v1beta/models → listModels
+        // GET /v1beta/models/{model} → getModel
+        // POST /v1beta/models/{model}:generateContent → generateContent
+        // POST /v1beta/models/{model}:streamGenerateContent → streamGenerateContent
+        // POST /v1beta/models/{model}:countTokens → countTokens
+        .route(
+            "/v1beta/models",
+            get(handlers::gemini_native::handle_list_models),
+        )
+        .route(
+            "/v1beta/models/*path",
+            get(handlers::gemini_native::handle_get_model),
+        )
+        .route(
+            "/v1beta/models/*path",
+            post(handlers::gemini_native::handle_generate_content_any),
+        )
         .layer(middleware::from_fn_with_state(
             config.clone(),
             auth::auth_middleware,
