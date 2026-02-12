@@ -230,10 +230,10 @@ oauth_provider = "anthropic"
 # Gemini CLI OAuth Provider (gemini-cli 官方应用)
 [[oauth_providers]]
 name = "gemini-cli"
-# 官方 Gemini CLI 客户端 ID（从 gemini-cli 源码获取）
-client_id = "YOUR_GEMINI_CLI_CLIENT_ID"
-# 客户端密钥（Web 应用必需）
-client_secret = "YOUR_GEMINI_CLI_CLIENT_SECRET"
+# 官方 Gemini CLI 公开客户端凭证
+client_id = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
+# 客户端密钥（公开 OAuth 客户端）
+client_secret = "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"
 # Google OAuth 授权端点
 auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
 # Google OAuth Token 端点
@@ -246,10 +246,10 @@ scopes = ["https://www.googleapis.com/auth/cloud-platform"]
 # Antigravity OAuth Provider (Antigravity 应用)
 [[oauth_providers]]
 name = "antigravity"
-# Antigravity 客户端 ID（从 antigravity 源码获取）
-client_id = "YOUR_ANTIGRAVITY_CLIENT_ID"
-# 客户端密钥（Web 应用必需）
-client_secret = "YOUR_ANTIGRAVITY_CLIENT_SECRET"
+# Antigravity 官方公开客户端凭证
+client_id = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+# 客户端密钥（公开 OAuth 客户端）
+client_secret = "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"
 # Google OAuth 授权端点
 auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
 # Google OAuth Token 端点
