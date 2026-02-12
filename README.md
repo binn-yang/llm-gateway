@@ -1,89 +1,116 @@
 # LLM Gateway
 
-A high-performance LLM proxy gateway written in Rust that provides multiple API formats for LLM providers (OpenAI, Anthropic Claude, Google Gemini):
-- **Unified OpenAI-compatible API** (`/v1/chat/completions`) - works with all providers via automatic protocol conversion
+A high-performance LLM proxy gateway written in Rust that provides multiple API formats for LLM providers (OpenAI, Anthropic Claude, Google Gemini, Azure OpenAI, AWS Bedrock, and custom OpenAI-compatible services):
+- **Unified OpenAI-compatible API** (`/v1/chat/completions`) - works with all providers via automatic protocol conversion (prefix routing)
 - **Native Anthropic Messages API** (`/v1/messages`) - direct passthrough for Claude models without conversion overhead
-- **Advanced Failover System** (NEW) - Circuit breaker, exponential backoff, intelligent error classification
+- **Path-Routed Endpoints** - Direct provider access: Azure (`/azure/*`), Bedrock (`/bedrock/*`), Responses API (`/v1/responses`), Custom (`/custom/:id/*`)
+- **Trait-based Provider Architecture** - Pluggable provider system via `LlmProvider` + `ProviderConfig` traits, add new providers without modifying match arms
+- **Advanced Failover System** - Circuit breaker, exponential backoff, intelligent error classification
 - **SQLite-based Observability** - Complete request logging with token tracking and performance metrics
-- **Web Dashboard** - Real-time monitoring and analytics UI built with Vue 3
 
 ## Features
 
 - **Multiple API Formats**:
   - Unified OpenAI-compatible API (`/v1/chat/completions`) with automatic protocol conversion
   - Native Anthropic Messages API (`/v1/messages`) for direct Claude access
+  - Path-routed endpoints for direct provider access (Azure, Bedrock, Custom, Responses API)
+- **7 Provider Implementations**:
+  - **OpenAI** - Standard chat completions with Bearer auth
+  - **Anthropic** - Native messages API with x-api-key/OAuth auth
+  - **Google Gemini** - generateContent API with query param/OAuth auth
+  - **Azure OpenAI** - Azure-specific URL/auth (`api-key` header, deployment-based routing)
+  - **AWS Bedrock** - SigV4 signed requests with model ID mapping
+  - **OpenAI Responses API** - `/v1/responses` endpoint passthrough
+  - **Custom OpenAI-compatible** - Any OpenAI-compatible service with custom headers
 - **Protocol Conversion**: Automatic request/response translation between OpenAI, Anthropic, and Gemini formats
-- **Smart Routing**: Prefix-based model routing to appropriate providers
+- **Dual Routing Modes**:
+  - **Prefix routing**: ModelRouter matches model name prefix to provider (e.g. `"gpt-"` → OpenAI)
+  - **Path routing**: URL determines provider directly (e.g. `/azure/v1/chat/completions` → Azure OpenAI)
 - **Multi-Instance Load Balancing**: Each provider supports multiple backend instances with priority-based selection
 - **Sticky Sessions**: API key-level session affinity maximizes provider-side KV cache hits
-- **Advanced Failover System** (NEW in v0.5.0):
+- **Advanced Failover System**:
   - **Circuit Breaker**: 3 failures trigger circuit open, half-open state for testing recovery
   - **Intelligent Error Classification**: 401/403 auth errors, 429 rate limits, 503 transient errors handled differently
   - **Exponential Backoff**: 60s → 120s → 240s → 480s → 600s with ±20% jitter
   - **Automatic Retry**: Smart retry logic with max 3 attempts, different strategies per error type
-  - **Health Monitoring**: Real-time health status via `stats` command (✅ Healthy / 🟡 Recovering / 🔴 Unhealthy)
+  - **Health Monitoring**: Real-time health status via `stats` command
   - **Event Logging**: failover_events table tracks all circuit breaker state transitions
 - **SQLite-based Observability**:
   - Complete request logging with token usage tracking
   - Anthropic prompt caching metrics (cache creation/read tokens)
-  - **Automatic Cost Calculation** (NEW):
-    - Real-time cost tracking for all requests (streaming and non-streaming)
-    - Supports input/output/cache tokens cost breakdown
-    - Hourly pricing data updates from remote source
-    - Per-request cost stored in database for analytics
+  - **Automatic Cost Calculation**: Real-time cost tracking with hourly pricing updates
   - Automatic data retention policies (7-30 days)
   - Non-blocking async batch writes
-  - **Provider Quota Monitoring**:
-    - Automatic quota refresh for Anthropic OAuth instances
-    - Real-time quota status via CLI stats command
-    - Supports 5-hour, 7-day, and 7-day (Sonnet) usage windows
-- **Web Dashboard** (NEW):
-  - Real-time token usage charts and analytics
-  - Provider instance health monitoring
-  - Per-API-key cost estimation
-  - Request trace visualization
-  - **Configuration Management UI** - CRUD operations for API keys, routing rules, and provider instances
+  - **Provider Quota Monitoring**: Automatic quota refresh for Anthropic OAuth instances
 - **Flexible Configuration**:
-  - Database-driven configuration with hot reload (no server restart required)
-  - Web UI for managing API keys, routing rules, and provider instances
-  - TOML file support for backward compatibility and initial setup
-  - Dual authentication: Gateway API keys (SHA256 hashed) + Provider API keys (encrypted storage)
-- **SQLite-based Metrics**: Unified observability with per-request granularity and automatic retention
+  - TOML-based configuration with hot reload via SIGHUP
+  - Dual authentication: Gateway API keys + Provider-specific auth (Bearer, OAuth, SigV4)
 - **Streaming Support**: Full SSE support with real-time protocol conversion
 - **Cloud Native**: Docker ready, health checks, structured JSON logging
 - **Horizontal Scaling**: Nginx-compatible for multi-machine deployments
 
 ## Architecture
 
-The gateway provides two API formats:
+The gateway provides three routing modes:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  Option 1: OpenAI-compatible API (all providers)                │
-│  ┌─────────────┐                                                │
-│  │   Cursor    │                                                │
-│  │  Continue   │  → /v1/chat/completions → Gateway →           │
-│  │   etc.      │                          Auto-routes to:       │
-│  └─────────────┘                          ├─ OpenAI (direct)   │
-│                                            ├─ Anthropic (convert)│
-│                                            └─ Gemini (convert)  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│  Mode 1: Prefix Routing (ModelRouter selects provider by model name) │
+│  ┌──────────────┐                                                    │
+│  │   Cursor     │                                                    │
+│  │  Continue    │  → /v1/chat/completions → ModelRouter →            │
+│  │   etc.       │                          ├─ OpenAI (direct)        │
+│  └──────────────┘                          ├─ Anthropic (convert)    │
+│                                             └─ Gemini (convert)      │
+└─────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────┐
-│  Option 2: Native Anthropic API (Claude only)                   │
-│  ┌─────────────┐                                                │
-│  │ Claude Code │  → /v1/messages → Gateway → Anthropic          │
-│  │  Anthropic  │                   (native format, no convert)  │
-│  │    SDK      │                                                │
-│  └─────────────┘                                                │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│  Mode 2: Native API (dedicated provider endpoint)                    │
+│  ┌──────────────┐                                                    │
+│  │ Claude Code  │  → /v1/messages → Gateway → Anthropic              │
+│  │  Anthropic   │                   (native format, no conversion)   │
+│  │    SDK       │                                                    │
+│  └──────────────┘                                                    │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│  Mode 3: Path Routing (URL determines provider, bypasses router)     │
+│  ┌──────────────┐  → /azure/v1/chat/completions → Azure OpenAI      │
+│  │  Direct      │  → /bedrock/v1/messages       → AWS Bedrock        │
+│  │  Provider    │  → /v1/responses              → OpenAI Responses   │
+│  │  Access      │  → /custom/:id/v1/chat/compl. → Custom Provider    │
+│  └──────────────┘                                                    │
+└─────────────────────────────────────────────────────────────────────┘
 ```
+
+### Provider Architecture (Trait-based)
+
+The gateway uses a trait-based pluggable provider system:
+
+```
+ProviderConfig trait          LlmProvider trait           ProviderRegistry
+(instance configuration)      (request sending)           (string-keyed lookup)
+┌──────────────────┐         ┌──────────────────┐        ┌──────────────────┐
+│ name()           │         │ provider_type()  │        │ "openai"         │
+│ enabled()        │         │ native_protocol()│        │ "anthropic"      │
+│ auth_mode()      │         │ send_request()   │        │ "azure_openai"   │
+│ api_key()        │         │ health_check_url│        │ "bedrock"        │
+│ base_url()       │         └──────────────────┘        │ "custom:deepseek"│
+│ as_any() → downcast│                                    └──────────────────┘
+└──────────────────┘
+```
+
+Adding a new provider requires:
+1. Config struct implementing `ProviderConfig`
+2. Provider struct implementing `LlmProvider`
+3. Registration in `create_provider_registry()`
+4. (Optional) Path-routed handler + route
 
 ## Load Balancing & High Availability
 
 ### Multi-Provider Instance Architecture
 
-Each provider type (OpenAI, Anthropic, Gemini) can have **multiple backend instances** for load balancing and automatic failover:
+Each provider type (OpenAI, Anthropic, Gemini, Azure OpenAI, Bedrock, Custom) can have **multiple backend instances** for load balancing and automatic failover:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -385,60 +412,83 @@ port = 8080
 log_level = "info"
 log_format = "json"
 
-# API Keys
+# Gateway API Keys
 [[api_keys]]
 key = "sk-gateway-001"
 name = "my-app"
 enabled = true
 
-# Model Mapping (defines which provider each model uses)
-[models.gpt-4]
-provider = "openai"
-api_model = "gpt-4"
+# Model Routing (prefix matching)
+[routing]
+default_provider = "openai"
 
-[models."claude-3-5-sonnet"]
-provider = "anthropic"
-api_model = "claude-3-5-sonnet-20241022"
+[routing.rules]
+"gpt-" = "openai"
+"claude-" = "anthropic"
+"gemini-" = "gemini"
+"deepseek-" = "custom:deepseek"    # Custom provider prefix routing
 
-[models."gemini-1.5-pro"]
-provider = "gemini"
-api_model = "models/gemini-1.5-pro-latest"
-
-# Provider Configurations
-[providers.openai]
+# Provider Configurations (each is an array of instances)
+[[providers.openai]]
+name = "openai-primary"
 enabled = true
 api_key = "sk-your-openai-key"
 base_url = "https://api.openai.com/v1"
 timeout_seconds = 300
+priority = 1
 
-[providers.anthropic]
-enabled = true
-api_key = "sk-ant-your-anthropic-key"
-base_url = "https://api.anthropic.com/v1"
-timeout_seconds = 300
-api_version = "2023-06-01"
-
-# Or use OAuth authentication (enables quota monitoring)
 [[providers.anthropic]]
-name = "anthropic-oauth"
+name = "anthropic-primary"
 enabled = true
-auth_mode = "oauth"
-oauth_provider = "anthropic"
+api_key = "sk-ant-your-key"
 base_url = "https://api.anthropic.com/v1"
 timeout_seconds = 300
 api_version = "2023-06-01"
+priority = 1
 
-[providers.gemini]
+[[providers.gemini]]
+name = "gemini-primary"
 enabled = true
 api_key = "your-gemini-key"
 base_url = "https://generativelanguage.googleapis.com/v1beta"
 timeout_seconds = 300
+priority = 1
 
-# Metrics
-[metrics]
+# Azure OpenAI (path-routed via /azure/v1/chat/completions)
+[[providers.azure_openai]]
+name = "azure-east"
 enabled = true
-endpoint = "/metrics"
-include_api_key_hash = true
+api_key = "your-azure-key"
+resource_name = "my-openai-resource"
+api_version = "2024-02-01"
+timeout_seconds = 300
+priority = 1
+
+[providers.azure_openai.model_deployments]
+"gpt-4" = "gpt-4-deployment"
+
+# AWS Bedrock (path-routed via /bedrock/v1/messages)
+[[providers.bedrock]]
+name = "bedrock-east"
+enabled = true
+region = "us-east-1"
+access_key_id = "AKIA..."
+secret_access_key = "..."
+timeout_seconds = 300
+priority = 1
+
+[providers.bedrock.model_id_mapping]
+"claude-3-5-sonnet" = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+
+# Custom OpenAI-compatible (path-routed via /custom/deepseek/v1/chat/completions)
+[[providers.custom]]
+name = "deepseek-primary"
+enabled = true
+provider_id = "deepseek"
+api_key = "sk-..."
+base_url = "https://api.deepseek.com/v1"
+timeout_seconds = 300
+priority = 1
 ```
 
 ### 2. Run with Docker
@@ -451,118 +501,38 @@ docker run -p 8080:8080 -v $(pwd)/config.toml:/app/config.toml llm-gateway
 ### 3. Run from source
 
 ```bash
-# Backend only
 cd backend
-cargo run --release
-
-# With frontend (for development)
-cd frontend
-npm install
-npm run dev        # Frontend dev server on http://localhost:3000
-
-# Production build (frontend)
-cd frontend
-npm run build      # Builds to frontend/dist/
-cd ../backend
-cargo run --release  # Serves frontend from /
+cargo build --release
+./target/release/llm-gateway start
 ```
-
-### 4. Access the Dashboard
-
-Once running, access the web dashboard at:
-```
-http://localhost:8080/
-```
-
-The dashboard provides:
-- Real-time token usage monitoring
-- Provider instance health status
-- Per-API-key analytics and cost estimation
-- Request trace visualization
 
 ## API Endpoints
 
-### Core LLM APIs
+### Prefix-Routed APIs (ModelRouter selects provider)
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
 | `/v1/chat/completions` | POST | Yes | OpenAI-compatible chat completion (all providers) |
 | `/v1/messages` | POST | Yes | Native Anthropic Messages API (Claude models only) |
 | `/v1/models` | GET | Yes | List available models |
+| `/v1beta/models` | GET | Yes | Gemini native: list models |
+| `/v1beta/models/*` | GET/POST | Yes | Gemini native: get model / generate content |
 
-### Monitoring & Observability
+### Path-Routed APIs (URL determines provider)
+
+| Endpoint | Method | Auth | Description |
+|----------|--------|------|-------------|
+| `/azure/v1/chat/completions` | POST | Yes | Azure OpenAI direct access |
+| `/bedrock/v1/messages` | POST | Yes | AWS Bedrock direct access (Anthropic format) |
+| `/v1/responses` | POST | Yes | OpenAI Responses API passthrough |
+| `/custom/:provider_id/v1/chat/completions` | POST | Yes | Custom OpenAI-compatible provider |
+
+### Monitoring
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
 | `/health` | GET | No | Health check |
 | `/ready` | GET | No | Readiness check |
-
-### Dashboard APIs (NEW)
-
-| Endpoint | Method | Auth | Description |
-|----------|--------|------|-------------|
-| `/` | GET | No | Web Dashboard (Vue 3 SPA) |
-| `/api/requests/time-series` | GET | No | Token usage time series data |
-| `/api/requests/by-api-key` | GET | No | Per-API-key token aggregation |
-| `/api/requests/by-instance` | GET | No | Per-instance token distribution |
-| `/api/instances/health-time-series` | GET | No | Instance health over time |
-| `/api/instances/current-health` | GET | No | Current instance health status |
-
-### Configuration Management APIs (NEW)
-
-| Endpoint | Method | Auth | Description |
-|----------|--------|------|-------------|
-| `/api/config/api-keys` | GET | No | List all API keys |
-| `/api/config/api-keys` | POST | No | Create new API key |
-| `/api/config/api-keys/:name` | PUT | No | Update API key (enable/disable) |
-| `/api/config/api-keys/:name` | DELETE | No | Delete API key |
-| `/api/config/routing-rules` | GET | No | List all routing rules |
-| `/api/config/routing-rules` | POST | No | Create new routing rule |
-| `/api/config/routing-rules/:id` | PUT | No | Update routing rule |
-| `/api/config/routing-rules/:id` | DELETE | No | Delete routing rule |
-| `/api/config/providers/:provider/instances` | GET | No | List provider instances |
-| `/api/config/providers/:provider/instances` | POST | No | Create provider instance |
-| `/api/config/providers/:provider/instances/:name` | PUT | No | Update provider instance |
-| `/api/config/providers/:provider/instances/:name` | DELETE | No | Delete provider instance |
-| `/api/config/reload` | POST | No | Reload configuration from database |
-
-## Configuration Management
-
-### Web-Based Configuration UI
-
-Access the configuration management interface at `http://localhost:8080/config` to manage your gateway settings through a user-friendly web interface.
-
-**Features**:
-- **API Keys Management**: Create, enable/disable, and delete gateway API keys
-- **Routing Rules**: Configure model prefix-to-provider routing (e.g., "gpt-" → openai)
-- **Provider Instances**: Manage multiple backend instances per provider with priority settings
-- **Hot Reload**: Changes take effect immediately without server restart
-- **Anthropic-Specific Settings**: Configure prompt caching and API version per instance
-
-**Configuration Flow**:
-```
-1. Initial Setup (TOML file)
-   ↓
-2. Server loads config into SQLite database
-   ↓
-3. Use Web UI to manage configuration
-   ↓
-4. Changes saved to database + hot reload
-   ↓
-5. No server restart required!
-```
-
-**Important Notes**:
-- **First Run**: Server loads configuration from `config.toml` into SQLite database
-- **Subsequent Runs**: Configuration loaded from database (TOML file ignored unless database is empty)
-- **API Key Storage**:
-  - Gateway API keys: SHA256 hashed for authentication
-  - Provider API keys: Stored as plaintext (required for upstream API calls)
-- **Backup**: Database file is at `./data/config.db` - back it up regularly
-
-### TOML Configuration (Legacy/Initial Setup)
-
-For initial setup or automated deployments, you can still use `config.toml`:
 
 ## Usage Examples
 
@@ -652,53 +622,63 @@ Overall: 2/4 healthy, 1 recovering, 1 down
 
 ### Direct API Calls
 
-**Option 1: OpenAI-compatible API** (works with all providers)
+**Prefix routing** (ModelRouter selects provider by model name):
 
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer sk-gateway-001" \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-3-5-sonnet",
-    "messages": [
-      {"role": "user", "content": "Hello!"}
-    ]
-  }'
+  -d '{"model": "claude-3-5-sonnet", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-**Option 2: Native Anthropic API** (Claude only, no conversion)
+**Native Anthropic API** (Claude only, no conversion):
 
 ```bash
 curl -X POST http://localhost:8080/v1/messages \
   -H "Authorization: Bearer sk-gateway-001" \
-  -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-3-5-sonnet-20241022",
-    "max_tokens": 1024,
-    "messages": [
-      {"role": "user", "content": "Hello!"}
-    ]
-  }'
+  -d '{"model": "claude-3-5-sonnet-20241022", "max_tokens": 1024,
+       "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-## Observability & Dashboard
+**Path-routed: Azure OpenAI**:
 
-### Web Dashboard
+```bash
+curl -X POST http://localhost:8080/azure/v1/chat/completions \
+  -H "Authorization: Bearer sk-gateway-001" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
 
-Access the dashboard at `http://localhost:8080/` to monitor your gateway in real-time:
+**Path-routed: AWS Bedrock** (Anthropic messages format):
 
-**Features**:
-- **Token Usage Analytics**: Visualize token consumption over time with interactive charts
-- **Cost Estimation**: Calculate costs based on token usage and prompt caching
-- **Provider Health**: Monitor instance health status and failover events
-- **API Key Breakdown**: Per-key token usage and cost analysis
-- **Request Traces**: Visualize request traces with performance breakdown
+```bash
+curl -X POST http://localhost:8080/bedrock/v1/messages \
+  -H "Authorization: Bearer sk-gateway-001" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude-3-5-sonnet", "max_tokens": 1024,
+       "messages": [{"role": "user", "content": "Hello!"}]}'
+```
 
-**Technology**:
-- Built with Vue 3 + TypeScript + Chart.js
-- Real-time data from SQLite database
-- Responsive design with Tailwind CSS
+**Path-routed: Custom provider** (e.g. DeepSeek):
+
+```bash
+curl -X POST http://localhost:8080/custom/deepseek/v1/chat/completions \
+  -H "Authorization: Bearer sk-gateway-001" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "deepseek-chat", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+**OpenAI Responses API**:
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Authorization: Bearer sk-gateway-001" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-4", "input": "Hello!"}'
+```
+
+## Observability
 
 ### SQLite-based Observability
 
@@ -870,14 +850,24 @@ ORDER BY provider, instance;
 - Automatic cleanup runs daily at 3 AM
 
 All metrics are stored in SQLite and accessible via:
-- **Web Dashboard**: Real-time charts at `http://localhost:8080/`
 - **SQL Queries**: Direct database access for custom analytics
-- **REST API**: Dashboard API endpoints for programmatic access
 - **CLI Stats**: `./target/release/llm-gateway stats` for system overview
 
 ## Feature Matrix
 
-The gateway supports comprehensive multimodal features across all providers:
+### Provider Support
+
+| Provider | Protocol | Auth | Routing | Streaming |
+|----------|----------|------|---------|-----------|
+| **OpenAI** | OpenAI | Bearer | Prefix (`gpt-`) | SSE |
+| **Anthropic** | Anthropic | x-api-key / OAuth | Prefix (`claude-`) + `/v1/messages` | SSE |
+| **Gemini** | Gemini | Query param / OAuth | Prefix (`gemini-`) + `/v1beta/*` | SSE |
+| **Azure OpenAI** | OpenAI | `api-key` header | Path (`/azure/*`) | SSE |
+| **AWS Bedrock** | Anthropic | AWS SigV4 | Path (`/bedrock/*`) | AWS Event Stream |
+| **OpenAI Responses** | OpenAI | Bearer | Path (`/v1/responses`) | SSE |
+| **Custom** | OpenAI | Bearer + custom headers | Path (`/custom/:id/*`) + Prefix | SSE |
+
+### Multimodal Features (via `/v1/chat/completions`)
 
 | Feature | OpenAI | Anthropic | Gemini | Notes |
 |---------|:------:|:---------:|:------:|-------|
@@ -1151,7 +1141,7 @@ cross build \
 # Output: backend/target/x86_64-unknown-linux-musl/release/llm-gateway
 ```
 
-**Important:** When using `cross` directly, always run it from the **project root directory** (not the `backend` directory), and use `--manifest-path backend/Cargo.toml`. This ensures that `frontend/dist` is accessible to the build container for embedding.
+**Important:** When using `cross` directly, always run it from the **project root directory** (not the `backend` directory), and use `--manifest-path backend/Cargo.toml`.
 
 **Binary sizes:**
 - macOS (release): ~10MB
@@ -1316,12 +1306,6 @@ In this setup:
 - If OAuth fails, automatically fails over to Bearer instance
 - `llm-gateway stats` shows quota info for primary, N/A for backup
 
-```bash
-export LLM_GATEWAY__SERVER__PORT=9000
-export LLM_GATEWAY__PROVIDERS__OPENAI__API_KEY="sk-new-key"
-export LLM_GATEWAY__OBSERVABILITY__ENABLED=true
-```
-
 ## License
 
 MIT
@@ -1375,8 +1359,7 @@ A: Only if Anthropic releases a quota query API for API Key authentication. The 
 A: While the gateway doesn't have built-in alerting, you can:
 1. Run `llm-gateway stats` periodically in a cron job
 2. Query the SQLite database directly
-3. Use the Dashboard API endpoints (`/api/instances/current-health`)
-4. Parse the output and send alerts when utilization exceeds a threshold
+3. Parse the output and send alerts when utilization exceeds a threshold
 
 Example cron job:
 ```bash
@@ -1386,11 +1369,11 @@ Example cron job:
 
 ## Architecture Details
 
-See the implementation plan in the repo for full architecture documentation including:
-- Three-endpoint design
-- Model routing logic
-- Protocol conversion strategies
-- Streaming architecture
-- Metrics implementation
+See `CLAUDE.md` for full architecture documentation including:
+- Trait-based provider architecture (`ProviderConfig`, `LlmProvider`, `ProviderRegistry`)
+- Dual routing modes (prefix routing + path routing)
+- Protocol conversion strategies (OpenAI ↔ Anthropic ↔ Gemini)
+- Failover system (circuit breaker, exponential backoff, error classification)
+- Streaming architecture and token tracking
 
-Built with ❤️ in Rust using Axum, Tokio, and SQLite.
+Built with Rust using Axum, Tokio, and SQLite.

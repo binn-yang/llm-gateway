@@ -5,10 +5,11 @@ This file provides guidance to Claude Code when working with code in this reposi
 ## Project Overview
 
 LLM Gateway 是一个高性能 Rust 代理服务,为多个 LLM 提供商提供统一 API:
-- **OpenAI 兼容 API** (`/v1/chat/completions`) - 通过协议转换支持所有提供商
+- **OpenAI 兼容 API** (`/v1/chat/completions`) - 通过协议转换支持所有提供商(前缀路由)
 - **原生 Anthropic API** (`/v1/messages`) - Claude 模型的直接透传
+- **路径路由端点** - Azure、Bedrock、Responses API、自定义 Provider 直连(绕过 ModelRouter)
 
-核心特性:基于优先级的粘性会话负载均衡、自动故障转移、SQLite 可观测性系统、Web Dashboard、完整的 token 跟踪(包括 Anthropic 提示缓存指标)。
+核心特性:基于 trait 的可插拔 Provider 架构、基于优先级的粘性会话负载均衡、自动故障转移、SQLite 可观测性系统、Web Dashboard、完整的 token 跟踪(包括 Anthropic 提示缓存指标)。
 
 **版本**: 0.5.0
 **技术栈**: Rust + Axum + Tokio + SQLite (后端) + Vue 3 + TypeScript + Chart.js (前端)
@@ -69,16 +70,93 @@ cargo test                          # 运行测试
 
 ### 请求流程
 
-**OpenAI 兼容 API** (`/v1/chat/completions`):
+**前缀路由** (`/v1/chat/completions`) — ModelRouter 根据模型名前缀选择 provider:
 ```
-客户端请求 → Auth中间件 → ModelRouter(路由) → LoadBalancer(粘性会话)
-→ Retry层(健康检测) → 协议转换器(如需要) → Provider(上游API调用)
+客户端请求 → Auth中间件 → ModelRouter(前缀匹配) → ProviderRegistry(查找)
+→ LoadBalancer(粘性会话) → Retry层 → LlmProvider.send_request() → 上游API
 ```
 
-**原生 Anthropic API** (`/v1/messages`):
+**原生 Anthropic API** (`/v1/messages`) — 直接路由到 Anthropic provider:
 ```
-客户端请求 → Auth中间件 → LoadBalancer(粘性会话)
-→ Retry层(健康检测) → Provider(直接调用,无转换)
+客户端请求 → Auth中间件 → ProviderRegistry("anthropic")
+→ LoadBalancer(粘性会话) → Retry层 → AnthropicProvider.send_request()
+```
+
+**路径路由** (`/azure/*`, `/bedrock/*`, `/v1/responses`, `/custom/:id/*`) — URL 直接确定 provider:
+```
+客户端请求 → Auth中间件 → ProviderRegistry(从URL提取provider名)
+→ LoadBalancer(粘性会话) → Retry层 → LlmProvider.send_request() → 上游API
+```
+
+### Provider 架构 (Trait-based)
+
+架构基于三个核心 trait/struct,新增 Provider 无需修改 match arm:
+
+#### ProviderConfig trait (`src/provider_config.rs`)
+统一的实例配置接口,替代旧的 `ProviderInstanceConfigEnum` 枚举:
+```rust
+pub trait ProviderConfig: Send + Sync + Debug + 'static {
+    fn name(&self) -> &str;
+    fn enabled(&self) -> bool;
+    fn auth_mode(&self) -> &AuthMode;
+    fn api_key(&self) -> Option<&str>;
+    fn oauth_provider(&self) -> Option<&str>;
+    fn base_url(&self) -> &str;
+    fn timeout_seconds(&self) -> u64;
+    fn priority(&self) -> u32;
+    fn failure_timeout_seconds(&self) -> u64;
+    fn weight(&self) -> u32;
+    fn as_any(&self) -> &dyn Any;  // downcast 到具体配置类型
+}
+```
+
+#### LlmProvider trait (`src/provider_trait.rs`)
+统一的 Provider 发送接口,封装 URL 构造 + 认证 + 请求发送:
+```rust
+pub trait LlmProvider: Send + Sync + 'static {
+    fn provider_type(&self) -> &str;
+    fn native_protocol(&self) -> ProviderProtocol;  // OpenAI | Anthropic | Gemini
+    async fn send_request(&self, client: &Client, config: &dyn ProviderConfig,
+                          request: UpstreamRequest) -> Result<Response, AppError>;
+    fn health_check_url(&self, config: &dyn ProviderConfig) -> String;
+}
+```
+
+#### ProviderRegistry (`src/registry.rs`)
+字符串键的注册中心,替代 `HashMap<Provider, Arc<LoadBalancer>>`:
+```rust
+pub struct RegisteredProvider {
+    pub provider: Arc<dyn LlmProvider>,
+    pub load_balancer: Arc<LoadBalancer>,
+}
+pub struct ProviderRegistry {
+    providers: HashMap<String, RegisteredProvider>,  // "openai", "anthropic", "custom:deepseek", ...
+}
+```
+
+#### 已实现的 Provider
+
+| Provider | 类型 | 协议 | 认证方式 | 路径路由 |
+|----------|------|------|----------|----------|
+| `OpenAIProvider` | openai | OpenAI | Bearer | `/v1/chat/completions` (前缀路由) |
+| `AnthropicProvider` | anthropic | Anthropic | x-api-key / OAuth | `/v1/messages` |
+| `GeminiProvider` | gemini | Gemini | query param / OAuth | `/v1beta/models/*` |
+| `AzureOpenAIProvider` | azure_openai | OpenAI | api-key header | `/azure/v1/chat/completions` |
+| `BedrockProvider` | bedrock | Anthropic | AWS SigV4 (手动) | `/bedrock/v1/messages` |
+| `OpenAIResponsesProvider` | openai (复用) | OpenAI | Bearer | `/v1/responses` |
+| `CustomOpenAIProvider` | custom:{id} | OpenAI | Bearer + 自定义 headers | `/custom/:provider_id/v1/chat/completions` |
+
+#### AppState
+```rust
+pub struct AppState {
+    pub config: Arc<ArcSwap<Config>>,
+    pub router: Arc<ModelRouter>,
+    pub http_client: reqwest::Client,
+    pub registry: Arc<ArcSwap<ProviderRegistry>>,  // 替代旧的 load_balancers
+    pub request_logger: Option<Arc<RequestLogger>>,
+    pub token_store: Option<Arc<TokenStore>>,
+    pub oauth_manager: Option<Arc<OAuthManager>>,
+}
 ```
 
 ### 核心组件
@@ -246,16 +324,30 @@ oauth_provider = "gemini-cli"
 
 ### Handlers (`src/handlers/`)
 
-**API 端点**:
-- `chat_completions.rs` - `/v1/chat/completions`(OpenAI 兼容)
-- `messages.rs` - `/v1/messages`(原生 Anthropic API)
-- `models.rs` - `/v1/models`(模型列表)
+**前缀路由端点** (通过 ModelRouter 选择 provider):
+- `chat_completions.rs` - `POST /v1/chat/completions`(OpenAI 兼容,自动协议转换)
+- `messages.rs` - `POST /v1/messages`(原生 Anthropic API)
+- `models.rs` - `GET /v1/models`(模型列表)
+- `gemini_native.rs` - `GET/POST /v1beta/models/*`(Gemini 原生 API)
+
+**路径路由端点** (绕过 ModelRouter,URL 直接确定 provider):
+- `azure.rs` - `POST /azure/v1/chat/completions`(Azure OpenAI 直连)
+- `bedrock.rs` - `POST /bedrock/v1/messages`(AWS Bedrock 直连)
+- `openai_responses.rs` - `POST /v1/responses`(OpenAI Responses API)
+- `custom.rs` - `POST /custom/:provider_id/v1/chat/completions`(自定义 provider)
+
+**公共函数**:
+- `common.rs` - `resolve_oauth_token()` OAuth token 解析(handler 间共享)
+
+**其他**:
 - `config_api.rs` - `/api/config/*`(配置管理 CRUD + 热重载)
 - `health.rs` - `/health`, `/ready`(健康检查)
 
 **使用建议**:
-- 多提供商支持/OpenAI 工具兼容 → 使用 `/v1/chat/completions`
+- 多提供商支持/OpenAI 工具兼容 → 使用 `/v1/chat/completions`(前缀路由)
 - Claude Code/官方 SDK/Anthropic 特性 → 使用 `/v1/messages`
+- 指定 provider 直连 → 使用路径路由(`/azure/*`, `/bedrock/*`, `/custom/:id/*`)
+- OpenAI Responses API → 使用 `/v1/responses`
 
 ### 前端 Dashboard (`frontend/`)
 
@@ -297,6 +389,58 @@ priority = 2
 # ... 其他配置 ...
 ```
 
+### Azure OpenAI 配置
+```toml
+[[providers.azure_openai]]
+name = "azure-primary"
+enabled = true
+api_key = "your-azure-api-key"
+resource_name = "my-openai-resource"
+api_version = "2024-02-01"
+# deployment_name = "gpt-4"  # 可选,默认用模型名
+timeout_seconds = 300
+priority = 1
+
+# 模型到 deployment 映射(可选)
+[providers.azure_openai.model_deployments]
+"gpt-4" = "gpt-4-deployment"
+"gpt-4o" = "gpt-4o-deployment"
+```
+
+### AWS Bedrock 配置
+```toml
+[[providers.bedrock]]
+name = "bedrock-primary"
+enabled = true
+region = "us-east-1"
+access_key_id = "AKIA..."
+secret_access_key = "..."
+# session_token = "..."  # 可选,用于临时凭证
+timeout_seconds = 300
+priority = 1
+
+# 模型 ID 映射(可选,友好名 → Bedrock model ID)
+[providers.bedrock.model_id_mapping]
+"claude-3-5-sonnet" = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+"claude-3-haiku" = "anthropic.claude-3-haiku-20240307-v1:0"
+```
+
+### 自定义 OpenAI 兼容 Provider 配置
+```toml
+[[providers.custom]]
+name = "deepseek-primary"
+enabled = true
+provider_id = "deepseek"          # registry 中注册为 "custom:deepseek"
+api_key = "sk-..."
+base_url = "https://api.deepseek.com/v1"
+timeout_seconds = 300
+priority = 1
+
+# 自定义请求 headers(可选)
+[providers.custom.custom_headers]
+"X-Custom-Header" = "value"
+```
+
 ### 路由配置
 ```toml
 [routing]
@@ -305,6 +449,7 @@ default_provider = "openai"
 [routing.rules]
 "gpt-" = "openai"
 "claude-" = "anthropic"
+"deepseek-" = "custom:deepseek"    # 自定义 provider 前缀路由
 
 [routing.discovery]
 enabled = true
@@ -347,24 +492,32 @@ fn create_test_config() -> Config {
         providers: ProvidersConfig {
             openai: vec![ProviderInstanceConfig { /* ... */ }],
             anthropic: vec![AnthropicInstanceConfig { /* ... */ }],
-            gemini: vec![ProviderInstanceConfig { /* ... */ }],
+            gemini: vec![],
+            azure_openai: vec![],
+            bedrock: vec![],
+            custom: vec![],
         },
         // ...
     }
 }
 ```
 
-**重要**: Providers 现在是数组(v0.3.0+)。
+**重要**: ProvidersConfig 所有字段都必须提供(即使是空 vec)。
 
 ## 常见修改模式
 
 ### 添加新提供商
-1. 在 `src/router.rs` 中添加 `Provider` 枚举变体
-2. 在 `src/config.rs` 中添加配置结构(在 `ProvidersConfig` 中)
-3. 在 `src/providers/` 中创建提供商模块
-4. 如不兼容 OpenAI,在 `src/converters/` 中添加转换器
-5. 更新 `src/server.rs` 中的 `build_load_balancers()`
-6. 更新配置中的路由规则
+新的 trait-based 架构下,添加 provider 只需 3 步(无需修改 match arm):
+
+1. **配置** (`src/config.rs`): 定义 `XxxInstanceConfig` struct,添加到 `ProvidersConfig`
+2. **ProviderConfig impl** (`src/provider_config.rs`): 为新 config 实现 `ProviderConfig` trait
+3. **LlmProvider impl** (`src/providers/xxx.rs`): 创建 Provider struct,实现 `LlmProvider` trait
+4. **注册** (`src/server.rs`): 在 `create_provider_registry()` 中注册
+5. **Handler** (`src/handlers/xxx.rs`): 如需路径路由,添加专用 handler + 路由
+
+如需前缀路由(通过 `/v1/chat/completions`),还需:
+6. 在 `routing.rules` 中添加前缀 → provider 映射
+7. 如不兼容 OpenAI 协议,在 `src/converters/` 中添加转换器
 
 ### 修改健康检测
 编辑 `src/retry.rs` 中的 `is_instance_failure()`:
