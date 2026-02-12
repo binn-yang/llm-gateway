@@ -78,10 +78,6 @@ pub enum OAuthCommands {
     Login {
         /// OAuth provider name
         provider: String,
-
-        /// Local callback server port
-        #[arg(short, long, default_value = "54545")]
-        port: u16,
     },
 
     /// Show OAuth token status

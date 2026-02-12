@@ -28,13 +28,6 @@ pub struct OAuthToken {
     pub subscription_info: Option<serde_json::Value>,
 }
 
-/// OAuth authorization response
-#[derive(Debug, Clone, Deserialize)]
-pub struct OAuthAuthorizationResponse {
-    pub code: String,
-    pub state: String,
-}
-
 /// OAuth token response from provider
 #[derive(Debug, Clone, Deserialize)]
 pub struct OAuthTokenResponse {
