@@ -272,11 +272,6 @@ where
                 // Request timed out - treat as instance failure
                 load_balancer.record_failure(&instance_name, FailureType::InstanceFailure).await;
 
-                let timeout_error = AppError::InternalError(format!(
-                    "Request timed out after {} seconds",
-                    timeout_duration.as_secs()
-                ));
-
                 tracing::warn!(
                     api_key_name = %crate::logging::sanitize_log_value(api_key_name),
                     instance = %instance_name,

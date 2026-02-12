@@ -41,11 +41,8 @@ pub async fn login(provider: String, port: u16) -> Result<()> {
         .find(|p| p.name == provider)
         .ok_or_else(|| anyhow::anyhow!("OAuth provider '{}' not found in configuration", provider))?;
 
-    // Initialize token store
-    let token_store_path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?
-        .join(".llm-gateway")
-        .join("oauth_tokens.json");
+    // Initialize token store (in data directory)
+    let token_store_path = std::path::PathBuf::from("./data/oauth_tokens.json");
 
     let token_store = Arc::new(TokenStore::new(token_store_path).await?);
 
@@ -191,7 +188,7 @@ async fn manual_callback_flow(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to save token: {}", e))?;
 
-    println!("  {} Token saved to ~/.llm-gateway/oauth_tokens.json", "✓".green());
+    println!("  {} Token saved to ./data/oauth_tokens.json", "✓".green());
     println!();
     println!("{}", "✓ Authentication successful!".green().bold());
     println!();
@@ -329,11 +326,8 @@ pub async fn status(provider: Option<String>, verbose: bool) -> Result<()> {
     println!("{}", "🔍 OAuth Token Status".bold());
     println!();
 
-    // Initialize token store
-    let token_store_path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?
-        .join(".llm-gateway")
-        .join("oauth_tokens.json");
+    // Initialize token store (in data directory)
+    let token_store_path = std::path::PathBuf::from("./data/oauth_tokens.json");
 
     let token_store = Arc::new(TokenStore::new(token_store_path).await?);
 
@@ -411,11 +405,8 @@ pub async fn refresh(provider: String) -> Result<()> {
     // Load configuration
     let config = load_config()?;
 
-    // Initialize token store
-    let token_store_path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?
-        .join(".llm-gateway")
-        .join("oauth_tokens.json");
+    // Initialize token store (in data directory)
+    let token_store_path = std::path::PathBuf::from("./data/oauth_tokens.json");
 
     let token_store = Arc::new(TokenStore::new(token_store_path).await?);
 
@@ -449,11 +440,8 @@ pub async fn logout(provider: String) -> Result<()> {
     println!("{}", format!("🚪 OAuth Logout - {}", provider).bold());
     println!();
 
-    // Initialize token store
-    let token_store_path = dirs::home_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?
-        .join(".llm-gateway")
-        .join("oauth_tokens.json");
+    // Initialize token store (in data directory)
+    let token_store_path = std::path::PathBuf::from("./data/oauth_tokens.json");
 
     let token_store = Arc::new(TokenStore::new(token_store_path).await?);
 

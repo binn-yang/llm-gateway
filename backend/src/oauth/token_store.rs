@@ -7,9 +7,11 @@ use aes_gcm::{
 use argon2::{Argon2, PasswordHasher};
 use argon2::password_hash::{SaltString, rand_core::OsRng};
 use base64::{engine::general_purpose::STANDARD, Engine};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::os::unix::fs::PermissionsExt;
 use tokio::fs;
 use tokio::sync::RwLock;
 
@@ -19,11 +21,14 @@ pub struct TokenStore {
     storage_path: PathBuf,
     tokens: RwLock<HashMap<String, OAuthToken>>,
     encryption_key: Vec<u8>,
+    salt: SaltString,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct TokenStorage {
     version: String,
+    #[serde(default)]
+    salt: Option<String>,
     tokens: HashMap<String, EncryptedToken>,
 }
 
@@ -47,16 +52,37 @@ struct EncryptedToken {
 impl TokenStore {
     /// Create a new token store with encryption
     pub async fn new(storage_path: PathBuf) -> Result<Self, AppError> {
-        // Generate encryption key from machine-specific data
-        let encryption_key = Self::derive_encryption_key()?;
+        let (encryption_key, salt) = if storage_path.exists() {
+            let content = fs::read_to_string(&storage_path).await
+                .map_err(|e| AppError::OAuthError {
+                    message: format!("Failed to read token file: {}", e),
+                })?;
+            let storage: TokenStorage = serde_json::from_str(&content)
+                .map_err(|e| AppError::OAuthError {
+                    message: format!("Failed to parse token file: {}", e),
+                })?;
+            
+            let salt_str = storage.salt.ok_or_else(|| AppError::OAuthError {
+                message: "Token file format outdated (v1.0). Please re-login with 'llm-gateway oauth login <provider>'.".to_string(),
+            })?;
+            let salt = SaltString::from_b64(&salt_str).map_err(|e| AppError::OAuthError {
+                message: format!("Invalid salt format: {}", e),
+            })?;
+            let key = Self::derive_encryption_key(&salt)?;
+            (key, salt)
+        } else {
+            let salt = SaltString::generate(&mut OsRng);
+            let key = Self::derive_encryption_key(&salt)?;
+            (key, salt)
+        };
 
         let mut store = Self {
             storage_path,
             tokens: RwLock::new(HashMap::new()),
             encryption_key,
+            salt,
         };
 
-        // Load existing tokens if file exists
         if store.storage_path.exists() {
             store.load_tokens().await?;
         }
@@ -64,9 +90,8 @@ impl TokenStore {
         Ok(store)
     }
 
-    /// Derive encryption key from machine-specific data
-    fn derive_encryption_key() -> Result<Vec<u8>, AppError> {
-        // Use hostname as password for key derivation
+    /// Derive encryption key from machine-specific data and salt
+    fn derive_encryption_key(salt: &SaltString) -> Result<Vec<u8>, AppError> {
         let hostname = hostname::get()
             .map_err(|e| AppError::OAuthError {
                 message: format!("Failed to get hostname: {}", e),
@@ -74,16 +99,14 @@ impl TokenStore {
             .to_string_lossy()
             .to_string();
 
-        let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();
 
         let password_hash = argon2
-            .hash_password(hostname.as_bytes(), &salt)
+            .hash_password(hostname.as_bytes(), salt)
             .map_err(|e| AppError::OAuthError {
                 message: format!("Failed to derive encryption key: {}", e),
             })?;
 
-        // Extract 32 bytes for AES-256
         let hash_bytes = password_hash.hash.ok_or_else(|| AppError::OAuthError {
             message: "Failed to extract hash bytes".to_string(),
         })?;
@@ -93,13 +116,11 @@ impl TokenStore {
 
     /// Save a token for a provider
     pub async fn save_token(&self, provider_name: &str, token: &OAuthToken) -> Result<(), AppError> {
-        // Update in-memory cache
         {
             let mut tokens = self.tokens.write().await;
             tokens.insert(provider_name.to_string(), token.clone());
         }
 
-        // Persist to disk
         self.save_tokens().await
     }
 
@@ -193,7 +214,8 @@ impl TokenStore {
         }
 
         let storage = TokenStorage {
-            version: "1.0".to_string(),
+            version: "2.0".to_string(),
+            salt: Some(self.salt.to_string()),
             tokens: encrypted_tokens,
         };
 
@@ -202,31 +224,41 @@ impl TokenStore {
                 message: format!("Failed to serialize tokens: {}", e),
             })?;
 
-        // Ensure parent directory exists
         if let Some(parent) = self.storage_path.parent() {
             fs::create_dir_all(parent).await.map_err(|e| AppError::OAuthError {
                 message: format!("Failed to create token directory: {}", e),
             })?;
         }
 
-        fs::write(&self.storage_path, content)
+        fs::write(&self.storage_path, &content)
             .await
             .map_err(|e| AppError::OAuthError {
                 message: format!("Failed to write token file: {}", e),
             })?;
 
+        #[cfg(unix)]
+        {
+            use std::fs::Permissions;
+            fs::set_permissions(&self.storage_path, Permissions::from_mode(0o600))
+                .await
+                .map_err(|e| AppError::OAuthError {
+                    message: format!("Failed to set file permissions: {}", e),
+                })?;
+        }
+
         Ok(())
     }
 
-    /// Encrypt a string
+    /// Encrypt a string with random nonce
     fn encrypt(&self, plaintext: &str) -> Result<String, AppError> {
         let cipher = Aes256Gcm::new_from_slice(&self.encryption_key)
             .map_err(|e| AppError::OAuthError {
                 message: format!("Failed to create cipher: {}", e),
             })?;
 
-        // Use a fixed nonce (not recommended for production, but acceptable for local storage)
-        let nonce = Nonce::from_slice(b"unique nonce");
+        let mut rng = rand::thread_rng();
+        let nonce_bytes: [u8; 12] = rng.gen();
+        let nonce = Nonce::from_slice(&nonce_bytes);
 
         let ciphertext = cipher
             .encrypt(nonce, plaintext.as_bytes())
@@ -234,22 +266,42 @@ impl TokenStore {
                 message: format!("Encryption failed: {}", e),
             })?;
 
-        Ok(STANDARD.encode(&ciphertext))
+        Ok(format!("{}:{}", 
+            STANDARD.encode(&nonce_bytes), 
+            STANDARD.encode(&ciphertext)))
     }
 
-    /// Decrypt a string
+    /// Decrypt a string (expects nonce:ciphertext format)
     fn decrypt(&self, ciphertext: &str) -> Result<String, AppError> {
         let cipher = Aes256Gcm::new_from_slice(&self.encryption_key)
             .map_err(|e| AppError::OAuthError {
                 message: format!("Failed to create cipher: {}", e),
             })?;
 
-        let nonce = Nonce::from_slice(b"unique nonce");
+        let parts: Vec<&str> = ciphertext.split(':').collect();
+        if parts.len() != 2 {
+            return Err(AppError::OAuthError {
+                message: "Invalid ciphertext format".to_string(),
+            });
+        }
 
-        let ciphertext_bytes = STANDARD.decode(ciphertext)
+        let nonce_bytes = STANDARD.decode(parts[0])
+            .map_err(|e| AppError::OAuthError {
+                message: format!("Failed to decode nonce: {}", e),
+            })?;
+        
+        if nonce_bytes.len() != 12 {
+            return Err(AppError::OAuthError {
+                message: "Invalid nonce length".to_string(),
+            });
+        }
+
+        let ciphertext_bytes = STANDARD.decode(parts[1])
             .map_err(|e| AppError::OAuthError {
                 message: format!("Failed to decode ciphertext: {}", e),
             })?;
+
+        let nonce = Nonce::from_slice(&nonce_bytes);
 
         let plaintext = cipher
             .decrypt(nonce, ciphertext_bytes.as_ref())
@@ -296,10 +348,8 @@ mod tests {
         let (store, _temp_dir) = create_test_store().await;
         let token = create_test_token();
 
-        // Save token
         store.save_token("test_provider", &token).await.unwrap();
 
-        // Retrieve token
         let retrieved = store.get_token("test_provider").await.unwrap();
         assert_eq!(retrieved.access_token, token.access_token);
         assert_eq!(retrieved.refresh_token, token.refresh_token);
@@ -311,16 +361,12 @@ mod tests {
         let (store, _temp_dir) = create_test_store().await;
         let token = create_test_token();
 
-        // Save token
         store.save_token("test_provider", &token).await.unwrap();
 
-        // Verify it exists
         assert!(store.get_token("test_provider").await.is_ok());
 
-        // Delete token
         store.delete_token("test_provider").await.unwrap();
 
-        // Verify it's gone
         assert!(store.get_token("test_provider").await.is_err());
     }
 
@@ -329,14 +375,11 @@ mod tests {
         let (store, _temp_dir) = create_test_store().await;
         let token = create_test_token();
 
-        // Initially empty
         assert_eq!(store.list_providers().await.len(), 0);
 
-        // Add tokens
         store.save_token("provider1", &token).await.unwrap();
         store.save_token("provider2", &token).await.unwrap();
 
-        // List should contain both
         let providers = store.list_providers().await;
         assert_eq!(providers.len(), 2);
         assert!(providers.contains(&"provider1".to_string()));
@@ -348,15 +391,27 @@ mod tests {
         let (store, _temp_dir) = create_test_store().await;
         let plaintext = "sensitive_token_data";
 
-        // Encrypt
         let encrypted = store.encrypt(plaintext).unwrap();
 
-        // Verify encrypted is different from plaintext
         assert_ne!(encrypted, plaintext);
+        assert!(encrypted.contains(':'), "Encrypted format should contain ':' separator");
 
-        // Decrypt
         let decrypted = store.decrypt(&encrypted).unwrap();
         assert_eq!(decrypted, plaintext);
+    }
+
+    #[tokio::test]
+    async fn test_random_nonce_different_ciphertexts() {
+        let (store, _temp_dir) = create_test_store().await;
+        let plaintext = "same_plaintext";
+
+        let encrypted1 = store.encrypt(plaintext).unwrap();
+        let encrypted2 = store.encrypt(plaintext).unwrap();
+
+        assert_ne!(encrypted1, encrypted2, "Same plaintext should produce different ciphertexts with random nonce");
+
+        assert_eq!(store.decrypt(&encrypted1).unwrap(), plaintext);
+        assert_eq!(store.decrypt(&encrypted2).unwrap(), plaintext);
     }
 
     #[tokio::test]
@@ -365,21 +420,46 @@ mod tests {
         let storage_path = temp_dir.path().join("persistent_tokens.json");
         let token = create_test_token();
 
-        // Save token
         let store = TokenStore::new(storage_path.clone()).await.unwrap();
         store.save_token("persistent_provider", &token).await.unwrap();
 
-        // Verify file exists
         assert!(storage_path.exists());
 
-        // Retrieve from same store instance (encryption key is same)
-        let retrieved = store.get_token("persistent_provider").await.unwrap();
+        let store2 = TokenStore::new(storage_path).await.unwrap();
+        let retrieved = store2.get_token("persistent_provider").await.unwrap();
         assert_eq!(retrieved.access_token, token.access_token);
         assert_eq!(retrieved.refresh_token, token.refresh_token);
+    }
 
-        // Note: TokenStore uses machine-specific encryption key derived from hostname + random salt
-        // So tokens saved by one TokenStore instance cannot be decrypted by another instance
-        // This is intentional for security - tokens are tied to the machine they were created on
+    #[tokio::test]
+    async fn test_v1_format_rejection() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage_path = temp_dir.path().join("v1_tokens.json");
+        
+        let v1_content = r#"{
+            "version": "1.0",
+            "tokens": {}
+        }"#;
+        fs::write(&storage_path, v1_content).await.unwrap();
+
+        let result = TokenStore::new(storage_path).await;
+        assert!(result.is_err());
+        if let Err(AppError::OAuthError { message }) = result {
+            assert!(message.contains("v1.0") || message.contains("outdated"));
+        } else {
+            panic!("Expected OAuthError for v1 format");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_invalid_ciphertext_format() {
+        let (store, _temp_dir) = create_test_store().await;
+
+        let result = store.decrypt("invalid_format_without_colon");
+        assert!(result.is_err());
+
+        let result = store.decrypt("invalid:base64:too:many:parts");
+        assert!(result.is_err());
     }
 
     #[tokio::test]

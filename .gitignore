@@ -48,6 +48,7 @@ config.toml
 
 # Data directory (contains runtime databases and logs)
 /data/
+/backend/data/
 
 # SQLite databases
 *.db
