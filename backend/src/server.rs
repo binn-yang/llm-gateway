@@ -2,7 +2,7 @@ use anyhow::Result;
 use arc_swap::ArcSwap;
 use axum::{extract::DefaultBodyLimit, middleware, routing::{get, post}, Router};
 use sqlx::SqlitePool;
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
@@ -10,11 +10,11 @@ use crate::{
     auth,
     config::Config,
     handlers,
-    load_balancer::{LoadBalancer, ProviderInstance, ProviderInstanceConfigEnum},
+    load_balancer::{LoadBalancer, ProviderInstance},
     observability::RequestLogger,
     pricing::{CostCalculator, PricingService, PricingUpdater},
     quota::QuotaRefresher,
-    router::{ModelRouter, Provider},
+    router::ModelRouter,
     signals::setup_signal_handlers,
 };
 
@@ -125,13 +125,13 @@ pub async fn start_server(config: Config) -> Result<()> {
     // Create HTTP client (before load balancers so they can use it for health checks)
     let http_client = Arc::new(reqwest::Client::new());
 
-    // Build load balancers for each provider type with HTTP client for active health checks
-    let load_balancers = Arc::new(arc_swap::ArcSwap::from_pointee(
-        (*build_load_balancers(&config, Some(&http_client))).clone()
+    // Build provider registry with load balancers for each provider type
+    let registry = Arc::new(arc_swap::ArcSwap::from_pointee(
+        create_provider_registry(&config, Some(&http_client))
     ));
 
     // Setup signal handlers (SIGTERM, SIGINT for shutdown; SIGHUP for reload)
-    let (shutdown_tx, signal_handle) = setup_signal_handlers(config_swap.clone(), load_balancers.clone());
+    let (shutdown_tx, signal_handle) = setup_signal_handlers(config_swap.clone(), registry.clone());
     let mut shutdown_rx = shutdown_tx.subscribe();
 
     // Initialize OAuth components if OAuth providers are configured
@@ -207,7 +207,7 @@ pub async fn start_server(config: Config) -> Result<()> {
         config: config_swap.clone(),
         router,
         http_client: (*http_client).clone(),
-        load_balancers: load_balancers.clone(),
+        registry: registry.clone(),
         request_logger: request_logger.clone(),
         token_store: token_store.clone(),
         oauth_manager: oauth_manager.clone(),
@@ -283,6 +283,23 @@ fn create_router(
             "/v1beta/models/*path",
             post(handlers::gemini_native::handle_generate_content_any),
         )
+        // Path-routed endpoints (bypass ModelRouter, provider determined by URL)
+        .route(
+            "/azure/v1/chat/completions",
+            post(handlers::azure::handle),
+        )
+        .route(
+            "/bedrock/v1/messages",
+            post(handlers::bedrock::handle),
+        )
+        .route(
+            "/v1/responses",
+            post(handlers::openai_responses::handle),
+        )
+        .route(
+            "/custom/:provider_id/v1/chat/completions",
+            post(handlers::custom::handle),
+        )
         .layer(middleware::from_fn_with_state(
             config.clone(),
             auth::auth_middleware,
@@ -303,128 +320,121 @@ fn create_router(
         .layer(TraceLayer::new_for_http())
 }
 
-/// Build load balancers for each provider type
-pub fn build_load_balancers(config: &Config, http_client: Option<&reqwest::Client>) -> Arc<HashMap<Provider, Arc<LoadBalancer>>> {
-    let mut load_balancers = HashMap::new();
+/// Helper to register a provider type into the registry.
+///
+/// Creates a LoadBalancer from instance configs, spawns background tasks, and registers.
+fn register_provider<C: crate::provider_config::ProviderConfig + Clone>(
+    registry: &mut crate::registry::ProviderRegistry,
+    provider_name: &str,
+    provider_impl: Arc<dyn crate::provider_trait::LlmProvider>,
+    instances_cfg: &[C],
+    http_client: Option<&reqwest::Client>,
+) {
+    let instances: Vec<ProviderInstance> = instances_cfg
+        .iter()
+        .filter(|i| i.enabled())
+        .map(|cfg| ProviderInstance {
+            name: Arc::from(cfg.name()),
+            config: Arc::new(cfg.clone()) as Arc<dyn crate::provider_config::ProviderConfig>,
+        })
+        .collect();
 
-    // OpenAI load balancer
-    if !config.providers.openai.is_empty() {
-        let instances: Vec<ProviderInstance> = config
-            .providers
-            .openai
-            .iter()
-            .filter(|i| i.enabled)
-            .map(|cfg| ProviderInstance {
-                name: Arc::from(cfg.name.as_str()),
-                config: ProviderInstanceConfigEnum::Generic(Arc::new(cfg.clone())),
-            })
-            .collect();
-
-        if !instances.is_empty() {
-            let lb = Arc::new(LoadBalancer::with_client(
-                "openai".to_string(),
-                instances,
-                http_client.cloned(),
-            ));
-
-            // Spawn background tasks for this load balancer
-            tokio::spawn({
-                let lb = lb.clone();
-                async move {
-                    lb.health_recovery_loop().await;
-                }
-            });
-
-            tokio::spawn({
-                let lb = lb.clone();
-                async move {
-                    lb.session_cleanup_loop().await;
-                }
-            });
-
-            load_balancers.insert(Provider::OpenAI, lb);
-        }
+    if instances.is_empty() {
+        return;
     }
 
-    // Anthropic load balancer
-    if !config.providers.anthropic.is_empty() {
-        let instances: Vec<ProviderInstance> = config
-            .providers
-            .anthropic
-            .iter()
-            .filter(|i| i.enabled)
-            .map(|cfg| ProviderInstance {
-                name: Arc::from(cfg.name.as_str()),
-                config: ProviderInstanceConfigEnum::Anthropic(Arc::new(cfg.clone())),
-            })
-            .collect();
+    let lb = Arc::new(LoadBalancer::with_client(
+        provider_name.to_string(),
+        instances,
+        http_client.cloned(),
+    ));
 
-        if !instances.is_empty() {
-            let lb = Arc::new(LoadBalancer::with_client(
-                "anthropic".to_string(),
-                instances,
-                http_client.cloned(),
-            ));
+    // Spawn background tasks
+    tokio::spawn({
+        let lb = lb.clone();
+        async move { lb.health_recovery_loop().await; }
+    });
+    tokio::spawn({
+        let lb = lb.clone();
+        async move { lb.session_cleanup_loop().await; }
+    });
 
-            // Spawn background tasks
-            tokio::spawn({
-                let lb = lb.clone();
-                async move {
-                    lb.health_recovery_loop().await;
-                }
-            });
+    registry.register(provider_name.to_string(), provider_impl, lb);
+}
 
-            tokio::spawn({
-                let lb = lb.clone();
-                async move {
-                    lb.session_cleanup_loop().await;
-                }
-            });
+/// Build ProviderRegistry from config (replaces build_load_balancers)
+pub fn create_provider_registry(
+    config: &Config,
+    http_client: Option<&reqwest::Client>,
+) -> crate::registry::ProviderRegistry {
+    use crate::provider_trait::{OpenAIProvider, AnthropicProvider, GeminiProvider};
+    use crate::providers::azure_openai::AzureOpenAIProvider;
+    use crate::providers::bedrock::BedrockProvider;
+    use crate::providers::custom::CustomOpenAIProvider;
 
-            load_balancers.insert(Provider::Anthropic, lb);
-        }
+    let mut registry = crate::registry::ProviderRegistry::new();
+
+    register_provider(
+        &mut registry,
+        "openai",
+        Arc::new(OpenAIProvider),
+        &config.providers.openai,
+        http_client,
+    );
+
+    register_provider(
+        &mut registry,
+        "anthropic",
+        Arc::new(AnthropicProvider),
+        &config.providers.anthropic,
+        http_client,
+    );
+
+    register_provider(
+        &mut registry,
+        "gemini",
+        Arc::new(GeminiProvider),
+        &config.providers.gemini,
+        http_client,
+    );
+
+    register_provider(
+        &mut registry,
+        "azure_openai",
+        Arc::new(AzureOpenAIProvider),
+        &config.providers.azure_openai,
+        http_client,
+    );
+
+    register_provider(
+        &mut registry,
+        "bedrock",
+        Arc::new(BedrockProvider),
+        &config.providers.bedrock,
+        http_client,
+    );
+
+    // Custom providers: group by provider_id, each group gets its own registry entry
+    let mut custom_groups: std::collections::HashMap<String, Vec<crate::config::CustomProviderInstanceConfig>> =
+        std::collections::HashMap::new();
+    for custom in &config.providers.custom {
+        custom_groups
+            .entry(custom.provider_id.clone())
+            .or_default()
+            .push(custom.clone());
+    }
+    for (provider_id, configs) in custom_groups {
+        let key = format!("custom:{}", provider_id);
+        register_provider(
+            &mut registry,
+            &key,
+            Arc::new(CustomOpenAIProvider),
+            &configs,
+            http_client,
+        );
     }
 
-    // Gemini load balancer
-    if !config.providers.gemini.is_empty() {
-        let instances: Vec<ProviderInstance> = config
-            .providers
-            .gemini
-            .iter()
-            .filter(|i| i.enabled)
-            .map(|cfg| ProviderInstance {
-                name: Arc::from(cfg.name.as_str()),
-                config: ProviderInstanceConfigEnum::Generic(Arc::new(cfg.clone())),
-            })
-            .collect();
-
-        if !instances.is_empty() {
-            let lb = Arc::new(LoadBalancer::with_client(
-                "gemini".to_string(),
-                instances,
-                http_client.cloned(),
-            ));
-
-            // Spawn background tasks
-            tokio::spawn({
-                let lb = lb.clone();
-                async move {
-                    lb.health_recovery_loop().await;
-                }
-            });
-
-            tokio::spawn({
-                let lb = lb.clone();
-                async move {
-                    lb.session_cleanup_loop().await;
-                }
-            });
-
-            load_balancers.insert(Provider::Gemini, lb);
-        }
-    }
-
-    Arc::new(load_balancers)
+    registry
 }
 
 /// Count the number of enabled providers
@@ -439,6 +449,18 @@ fn count_enabled_providers(config: &Config) -> usize {
     if config.providers.gemini.iter().any(|p| p.enabled) {
         count += 1;
     }
+    if config.providers.azure_openai.iter().any(|p| p.enabled) {
+        count += 1;
+    }
+    if config.providers.bedrock.iter().any(|p| p.enabled) {
+        count += 1;
+    }
+    // Count unique custom provider_ids
+    let custom_ids: std::collections::HashSet<&str> = config.providers.custom.iter()
+        .filter(|p| p.enabled)
+        .map(|p| p.provider_id.as_str())
+        .collect();
+    count += custom_ids.len();
     count
 }
 
@@ -518,6 +540,9 @@ mod tests {
                     auth_mode: crate::config::AuthMode::Bearer,
                     oauth_provider: None,
                 }],
+                azure_openai: vec![],
+                bedrock: vec![],
+                custom: vec![],
             },
             observability: crate::config::ObservabilityConfig::default(),
             oauth_providers: vec![],
@@ -544,15 +569,15 @@ mod tests {
         let config_swap = Arc::new(ArcSwap::from_pointee(config.clone()));
         let router = Arc::new(ModelRouter::new(config_swap.clone()));
         let http_client = reqwest::Client::new();
-        let load_balancers = Arc::new(arc_swap::ArcSwap::from_pointee(
-            (*build_load_balancers(&config, Some(&http_client))).clone()
+        let registry = Arc::new(arc_swap::ArcSwap::from_pointee(
+            create_provider_registry(&config, Some(&http_client))
         ));
 
         let app_state = handlers::chat_completions::AppState {
             config: config_swap.clone(),
             router,
             http_client,
-            load_balancers: load_balancers.clone(),
+            registry: registry.clone(),
             request_logger: None,
             token_store: None,
             oauth_manager: None,

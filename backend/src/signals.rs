@@ -1,6 +1,5 @@
 use anyhow::{bail, Result};
 use arc_swap::ArcSwap;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{error, info};
@@ -11,7 +10,7 @@ use nix::libc;
 use tokio::signal::unix::{signal, SignalKind};
 
 use crate::config::Config;
-use crate::router::Provider;
+use crate::registry::ProviderRegistry;
 
 /// Shutdown signal types
 #[derive(Debug, Clone, Copy)]
@@ -30,7 +29,7 @@ pub enum ShutdownSignal {
 #[cfg(unix)]
 pub fn setup_signal_handlers(
     config: Arc<ArcSwap<Config>>,
-    load_balancers: Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<crate::load_balancer::LoadBalancer>>>>,
+    registry: Arc<ArcSwap<ProviderRegistry>>,
 ) -> (
     broadcast::Sender<ShutdownSignal>,
     tokio::task::JoinHandle<()>,
@@ -57,7 +56,7 @@ pub fn setup_signal_handlers(
                 }
                 _ = sighup.recv() => {
                     info!("SIGHUP received, reloading configuration");
-                    if let Err(e) = reload_config(config.clone(), &load_balancers).await {
+                    if let Err(e) = reload_config(config.clone(), &registry).await {
                         error!("Failed to reload configuration: {}", e);
                     } else {
                         info!("Configuration reloaded successfully");
@@ -74,7 +73,7 @@ pub fn setup_signal_handlers(
 #[cfg(not(unix))]
 pub fn setup_signal_handlers(
     _config: Arc<ArcSwap<Config>>,
-    _load_balancers: Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<crate::load_balancer::LoadBalancer>>>>,
+    _registry: Arc<ArcSwap<ProviderRegistry>>,
 ) -> (
     broadcast::Sender<ShutdownSignal>,
     tokio::task::JoinHandle<()>,
@@ -105,7 +104,7 @@ pub fn setup_signal_handlers(
 /// If any step fails, the old configuration remains in place.
 async fn reload_config(
     config: Arc<ArcSwap<Config>>,
-    load_balancers: &Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<crate::load_balancer::LoadBalancer>>>>,
+    registry: &Arc<ArcSwap<ProviderRegistry>>,
 ) -> Result<()> {
     info!("Loading new configuration...");
 
@@ -120,43 +119,43 @@ async fn reload_config(
         new_config.api_keys.len()
     );
 
-    // Phase 2: Build new load balancers from new config
-    info!("Building new load balancers...");
-    // Note: We pass None for HTTP client during config reload. Active health checks
-    // will be disabled for the new load balancers, but the system will still function
-    // with timeout-based recovery.
-    let new_load_balancers = (*crate::server::build_load_balancers(&new_config, None)).clone();
+    // Phase 2: Build new provider registry from new config
+    info!("Building new provider registry...");
+    let new_registry = crate::server::create_provider_registry(&new_config, None);
 
     // Phase 3: Validate that each provider has at least one healthy instance
-    for (provider, load_balancer) in new_load_balancers.iter() {
-        let healthy_count = load_balancer.healthy_instance_count().await;
+    for (provider_name, registered) in new_registry.iter() {
+        let healthy_count = registered.load_balancer.healthy_instance_count().await;
         if healthy_count == 0 {
             bail!(
                 "Rejecting reload: Provider {} has no healthy instances (all instances are disabled or unhealthy)",
-                provider
+                provider_name
             );
         }
         info!(
             "Provider {} has {} healthy instance(s)",
-            provider, healthy_count
+            provider_name, healthy_count
         );
     }
 
-    // Phase 3.5: Migrate sessions from old load balancers to new ones
+    // Phase 3.5: Migrate sessions from old registry to new ones
     info!("Migrating sticky sessions from old load balancers...");
-    let old_load_balancers = load_balancers.load();
+    let old_registry = registry.load();
     let mut total_migrated = 0;
     let mut total_dropped = 0;
 
-    for (provider, new_lb) in new_load_balancers.iter() {
-        if let Some(old_lb) = old_load_balancers.get(provider) {
-            let stats = new_lb.migrate_sessions_from(old_lb).await;
+    for (provider_name, new_reg) in new_registry.iter() {
+        if let Some(old_reg) = old_registry.get(provider_name) {
+            let stats = new_reg
+                .load_balancer
+                .migrate_sessions_from(&old_reg.load_balancer)
+                .await;
 
             total_migrated += stats.migrated;
             total_dropped += stats.total_dropped();
 
             info!(
-                provider = %provider,
+                provider = %provider_name,
                 total = stats.total_sessions,
                 migrated = stats.migrated,
                 dropped_expired = stats.dropped_expired,
@@ -167,7 +166,7 @@ async fn reload_config(
             );
         } else {
             info!(
-                provider = %provider,
+                provider = %provider_name,
                 "No old load balancer found, skipping session migration"
             );
         }
@@ -179,11 +178,11 @@ async fn reload_config(
         "Session migration completed for all providers"
     );
 
-    // Phase 4: Atomic swap - both config and load balancers are updated together
+    // Phase 4: Atomic swap - both config and registry are updated together
     config.store(Arc::new(new_config));
-    load_balancers.store(Arc::new(new_load_balancers));
+    registry.store(Arc::new(new_registry));
 
-    info!("Configuration and load balancers swapped atomically");
+    info!("Configuration and provider registry swapped atomically");
     Ok(())
 }
 
@@ -290,6 +289,9 @@ mod tests {
                     auth_mode: crate::config::AuthMode::Bearer,
                     oauth_provider: None,
                 }],
+                azure_openai: vec![],
+                bedrock: vec![],
+                custom: vec![],
             },
             observability: crate::config::ObservabilityConfig::default(),
             oauth_providers: vec![],
@@ -299,8 +301,8 @@ mod tests {
     #[tokio::test]
     async fn test_setup_signal_handlers() {
         let config = Arc::new(ArcSwap::from_pointee(create_test_config()));
-        let load_balancers = Arc::new(arc_swap::ArcSwap::from_pointee(std::collections::HashMap::new()));
-        let (shutdown_tx, _handle) = setup_signal_handlers(config, load_balancers);
+        let registry = Arc::new(ArcSwap::from_pointee(ProviderRegistry::new()));
+        let (shutdown_tx, _handle) = setup_signal_handlers(config, registry);
 
         // Should be able to subscribe to shutdown signals
         let mut rx = shutdown_tx.subscribe();

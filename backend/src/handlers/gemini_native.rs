@@ -146,11 +146,11 @@ pub async fn handle_generate_content_any(
     }
 
     // 获取 Gemini LoadBalancer
-    let load_balancers_map = state.load_balancers.load();
-    let load_balancer = load_balancers_map
-        .get(&crate::router::Provider::Gemini)
-        .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?
-        .clone();
+    let registry = state.registry.load();
+    let registered = registry
+        .get("gemini")
+        .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?;
+    let load_balancer = registered.load_balancer.clone();
 
     // 使用 execute_with_session 执行请求（粘性会话 + 故障转移）
     let http_client = state.http_client.clone();
@@ -164,10 +164,10 @@ pub async fn handle_generate_content_any(
             let oauth_manager = oauth_manager.clone();
             let model_clone = model.clone();
             async move {
-                let config = match &instance.config {
-                    crate::load_balancer::ProviderInstanceConfigEnum::Generic(cfg) => cfg.as_ref(),
-                    _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
-                };
+                let config = instance.config
+                    .as_any()
+                    .downcast_ref::<crate::config::ProviderInstanceConfig>()
+                    .ok_or_else(|| AppError::InternalError("Invalid instance config type".to_string()))?;
 
                 // 获取 OAuth token（如需要）
                 let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
@@ -411,11 +411,11 @@ pub async fn handle_stream_generate_content_any(
     }
 
     // 获取 Gemini LoadBalancer
-    let load_balancers_map = state.load_balancers.load();
-    let load_balancer = load_balancers_map
-        .get(&crate::router::Provider::Gemini)
-        .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?
-        .clone();
+    let registry = state.registry.load();
+    let registered = registry
+        .get("gemini")
+        .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?;
+    let load_balancer = registered.load_balancer.clone();
 
     // 使用 execute_with_session 执行请求
     let http_client = state.http_client.clone();
@@ -429,10 +429,10 @@ pub async fn handle_stream_generate_content_any(
             let oauth_manager = oauth_manager.clone();
             let model_clone = model.clone();
             async move {
-                let config = match &instance.config {
-                    crate::load_balancer::ProviderInstanceConfigEnum::Generic(cfg) => cfg.as_ref(),
-                    _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
-                };
+                let config = instance.config
+                    .as_any()
+                    .downcast_ref::<crate::config::ProviderInstanceConfig>()
+                    .ok_or_else(|| AppError::InternalError("Invalid instance config type".to_string()))?;
 
                 let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
                     if let Some(ref oauth_provider_name) = config.oauth_provider {
@@ -603,11 +603,11 @@ pub async fn handle_count_tokens(
     );
 
     // 获取 Gemini LoadBalancer
-    let load_balancers_map = state.load_balancers.load();
-    let load_balancer = load_balancers_map
-        .get(&crate::router::Provider::Gemini)
-        .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?
-        .clone();
+    let registry = state.registry.load();
+    let registered = registry
+        .get("gemini")
+        .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?;
+    let load_balancer = registered.load_balancer.clone();
 
     // 执行请求
     let http_client = state.http_client.clone();
@@ -621,10 +621,10 @@ pub async fn handle_count_tokens(
             let oauth_manager = oauth_manager.clone();
             let model_clone = model.clone();
             async move {
-                let config = match &instance.config {
-                    crate::load_balancer::ProviderInstanceConfigEnum::Generic(cfg) => cfg.as_ref(),
-                    _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
-                };
+                let config = instance.config
+                    .as_any()
+                    .downcast_ref::<crate::config::ProviderInstanceConfig>()
+                    .ok_or_else(|| AppError::InternalError("Invalid instance config type".to_string()))?;
 
                 let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
                     if let Some(ref oauth_provider_name) = config.oauth_provider {
@@ -691,11 +691,11 @@ pub async fn handle_list_models(
     );
 
     // 获取 Gemini LoadBalancer
-    let load_balancers_map = state.load_balancers.load();
-    let load_balancer = load_balancers_map
-        .get(&crate::router::Provider::Gemini)
-        .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?
-        .clone();
+    let registry = state.registry.load();
+    let registered = registry
+        .get("gemini")
+        .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?;
+    let load_balancer = registered.load_balancer.clone();
 
     // 获取任意一个实例配置（用于 base_url 和认证）
     let config = {
@@ -706,10 +706,11 @@ pub async fn handle_list_models(
         let instance_name = &instances[0].instance;
         let instance = load_balancer.get_instance_by_name(instance_name)
             .ok_or_else(|| AppError::InternalError(format!("Instance {} not found", instance_name)))?;
-        match &instance.config {
-            crate::load_balancer::ProviderInstanceConfigEnum::Generic(cfg) => cfg.as_ref().clone(),
-            _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
-        }
+        instance.config
+            .as_any()
+            .downcast_ref::<crate::config::ProviderInstanceConfig>()
+            .ok_or_else(|| AppError::InternalError("Invalid instance config type".to_string()))?
+            .clone()
     };
 
     // 获取 OAuth token（如需要）
@@ -775,11 +776,11 @@ pub async fn handle_get_model(
     );
 
     // 获取 Gemini LoadBalancer
-    let load_balancers_map = state.load_balancers.load();
-    let load_balancer = load_balancers_map
-        .get(&crate::router::Provider::Gemini)
-        .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?
-        .clone();
+    let registry = state.registry.load();
+    let registered = registry
+        .get("gemini")
+        .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?;
+    let load_balancer = registered.load_balancer.clone();
 
     // 获取实例配置
     let config = {
@@ -790,10 +791,11 @@ pub async fn handle_get_model(
         let instance_name = &instances[0].instance;
         let instance = load_balancer.get_instance_by_name(instance_name)
             .ok_or_else(|| AppError::InternalError(format!("Instance {} not found", instance_name)))?;
-        match &instance.config {
-            crate::load_balancer::ProviderInstanceConfigEnum::Generic(cfg) => cfg.as_ref().clone(),
-            _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
-        }
+        instance.config
+            .as_any()
+            .downcast_ref::<crate::config::ProviderInstanceConfig>()
+            .ok_or_else(|| AppError::InternalError("Invalid instance config type".to_string()))?
+            .clone()
     };
 
     // 获取 OAuth token（如需要）

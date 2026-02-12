@@ -84,6 +84,12 @@ pub struct ProvidersConfig {
     pub anthropic: Vec<AnthropicInstanceConfig>,
     #[serde(default)]
     pub gemini: Vec<ProviderInstanceConfig>,
+    #[serde(default)]
+    pub azure_openai: Vec<AzureOpenAIInstanceConfig>,
+    #[serde(default)]
+    pub bedrock: Vec<BedrockInstanceConfig>,
+    #[serde(default)]
+    pub custom: Vec<CustomProviderInstanceConfig>,
 }
 
 impl Default for ProvidersConfig {
@@ -92,6 +98,9 @@ impl Default for ProvidersConfig {
             openai: vec![],
             anthropic: vec![],
             gemini: vec![],
+            azure_openai: vec![],
+            bedrock: vec![],
+            custom: vec![],
         }
     }
 }
@@ -163,6 +172,127 @@ pub struct AnthropicInstanceConfig {
     /// Prompt caching configuration
     #[serde(default)]
     pub cache: CacheConfig,
+}
+
+/// Azure OpenAI instance configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AzureOpenAIInstanceConfig {
+    pub name: String,
+    pub enabled: bool,
+
+    #[serde(default = "default_auth_mode")]
+    pub auth_mode: AuthMode,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_provider: Option<String>,
+
+    /// Azure resource name (e.g. "my-openai-resource")
+    pub resource_name: String,
+
+    /// Azure API version (e.g. "2024-02-01")
+    pub api_version: String,
+
+    /// Default deployment name (used if model not found in model_deployments)
+    #[serde(default)]
+    pub deployment_name: Option<String>,
+
+    /// Model name to deployment name mapping
+    #[serde(default)]
+    pub model_deployments: HashMap<String, String>,
+
+    #[serde(default = "default_timeout")]
+    pub timeout_seconds: u64,
+
+    #[serde(default = "default_priority")]
+    pub priority: u32,
+
+    #[serde(default = "default_failure_timeout")]
+    pub failure_timeout_seconds: u64,
+
+    #[serde(default = "default_weight")]
+    pub weight: u32,
+}
+
+/// AWS Bedrock instance configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BedrockInstanceConfig {
+    pub name: String,
+    pub enabled: bool,
+
+    /// AWS region (e.g. "us-east-1")
+    pub region: String,
+
+    /// AWS access key ID
+    pub access_key_id: String,
+
+    /// AWS secret access key
+    pub secret_access_key: String,
+
+    /// AWS session token (for temporary credentials)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_token: Option<String>,
+
+    /// Model name to Bedrock model ID mapping
+    /// e.g. "claude-3-5-sonnet" -> "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    #[serde(default)]
+    pub model_id_mapping: HashMap<String, String>,
+
+    #[serde(default = "default_timeout")]
+    pub timeout_seconds: u64,
+
+    #[serde(default = "default_priority")]
+    pub priority: u32,
+
+    #[serde(default = "default_failure_timeout")]
+    pub failure_timeout_seconds: u64,
+
+    #[serde(default = "default_weight")]
+    pub weight: u32,
+}
+
+/// Custom OpenAI-compatible provider instance configuration
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CustomProviderInstanceConfig {
+    pub name: String,
+    pub enabled: bool,
+
+    /// Unique provider identifier (e.g. "deepseek", "ollama")
+    /// Each provider_id gets its own registry entry as "custom:{provider_id}"
+    pub provider_id: String,
+
+    #[serde(default = "default_auth_mode")]
+    pub auth_mode: AuthMode,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth_provider: Option<String>,
+
+    pub base_url: String,
+
+    /// Extra headers to include in every request
+    #[serde(default)]
+    pub custom_headers: HashMap<String, String>,
+
+    #[serde(default = "default_timeout")]
+    pub timeout_seconds: u64,
+
+    #[serde(default = "default_priority")]
+    pub priority: u32,
+
+    #[serde(default = "default_failure_timeout")]
+    pub failure_timeout_seconds: u64,
+
+    #[serde(default = "default_weight")]
+    pub weight: u32,
+}
+
+fn default_timeout() -> u64 {
+    300
 }
 
 /// Prompt caching configuration for Anthropic
@@ -558,8 +688,13 @@ fn validate_config(cfg: &Config) -> anyhow::Result<()> {
     let has_enabled_openai = cfg.providers.openai.iter().any(|p| p.enabled);
     let has_enabled_anthropic = cfg.providers.anthropic.iter().any(|p| p.enabled);
     let has_enabled_gemini = cfg.providers.gemini.iter().any(|p| p.enabled);
+    let has_enabled_azure = cfg.providers.azure_openai.iter().any(|p| p.enabled);
+    let has_enabled_bedrock = cfg.providers.bedrock.iter().any(|p| p.enabled);
+    let has_enabled_custom = cfg.providers.custom.iter().any(|p| p.enabled);
 
-    if !has_enabled_openai && !has_enabled_anthropic && !has_enabled_gemini {
+    if !has_enabled_openai && !has_enabled_anthropic && !has_enabled_gemini
+        && !has_enabled_azure && !has_enabled_bedrock && !has_enabled_custom
+    {
         anyhow::bail!("At least one provider instance must be enabled");
     }
 
@@ -567,6 +702,9 @@ fn validate_config(cfg: &Config) -> anyhow::Result<()> {
     validate_unique_instance_names(&cfg.providers.openai, "OpenAI")?;
     validate_unique_instance_names(&cfg.providers.anthropic, "Anthropic")?;
     validate_unique_instance_names(&cfg.providers.gemini, "Gemini")?;
+    validate_unique_instance_names(&cfg.providers.azure_openai, "Azure OpenAI")?;
+    validate_unique_instance_names(&cfg.providers.bedrock, "Bedrock")?;
+    validate_unique_instance_names(&cfg.providers.custom, "Custom")?;
 
     // Validate instance-specific constraints
     for instance in &cfg.providers.openai {
@@ -591,47 +729,45 @@ fn validate_config(cfg: &Config) -> anyhow::Result<()> {
         }
     }
 
+    // Build set of enabled provider names for routing validation
+    let mut enabled_providers = std::collections::HashSet::new();
+    if has_enabled_openai { enabled_providers.insert("openai"); }
+    if has_enabled_anthropic { enabled_providers.insert("anthropic"); }
+    if has_enabled_gemini { enabled_providers.insert("gemini"); }
+    if has_enabled_azure { enabled_providers.insert("azure_openai"); }
+    if has_enabled_bedrock { enabled_providers.insert("bedrock"); }
+    // Custom providers use "custom:{id}" keys
+    for custom in &cfg.providers.custom {
+        if custom.enabled {
+            // Custom providers are valid routing targets
+            enabled_providers.insert("custom");
+        }
+    }
+
     // Validate routing rules reference enabled providers
     for (prefix, provider_name) in &cfg.routing.rules {
-        match provider_name.as_str() {
-            "openai" => {
-                if !has_enabled_openai {
-                    anyhow::bail!("Routing rule '{}' uses OpenAI provider, but no OpenAI instances are enabled", prefix);
-                }
-            }
-            "anthropic" => {
-                if !has_enabled_anthropic {
-                    anyhow::bail!("Routing rule '{}' uses Anthropic provider, but no Anthropic instances are enabled", prefix);
-                }
-            }
-            "gemini" => {
-                if !has_enabled_gemini {
-                    anyhow::bail!("Routing rule '{}' uses Gemini provider, but no Gemini instances are enabled", prefix);
-                }
-            }
-            _ => anyhow::bail!("Routing rule '{}' has invalid provider: {}", prefix, provider_name),
+        let base_provider = if provider_name.starts_with("custom:") {
+            "custom"
+        } else {
+            provider_name.as_str()
+        };
+        if !enabled_providers.contains(base_provider) {
+            anyhow::bail!(
+                "Routing rule '{}' uses provider '{}', but no instances are enabled",
+                prefix, provider_name
+            );
         }
     }
 
     // Validate default provider if set
     if let Some(default_provider) = &cfg.routing.default_provider {
-        match default_provider.as_str() {
-            "openai" => {
-                if !has_enabled_openai {
-                    anyhow::bail!("Default provider 'openai' has no enabled instances");
-                }
-            }
-            "anthropic" => {
-                if !has_enabled_anthropic {
-                    anyhow::bail!("Default provider 'anthropic' has no enabled instances");
-                }
-            }
-            "gemini" => {
-                if !has_enabled_gemini {
-                    anyhow::bail!("Default provider 'gemini' has no enabled instances");
-                }
-            }
-            _ => anyhow::bail!("Invalid default provider: {}", default_provider),
+        let base_provider = if default_provider.starts_with("custom:") {
+            "custom"
+        } else {
+            default_provider.as_str()
+        };
+        if !enabled_providers.contains(base_provider) {
+            anyhow::bail!("Default provider '{}' has no enabled instances", default_provider);
         }
     }
 
@@ -757,6 +893,16 @@ fn validate_oauth_providers(cfg: &Config) -> anyhow::Result<()> {
             validate_oauth_ref(&instance.oauth_provider, &instance.name, "Gemini")?;
         }
     }
+    for instance in &cfg.providers.azure_openai {
+        if instance.auth_mode == AuthMode::OAuth {
+            validate_oauth_ref(&instance.oauth_provider, &instance.name, "Azure OpenAI")?;
+        }
+    }
+    for instance in &cfg.providers.custom {
+        if instance.auth_mode == AuthMode::OAuth {
+            validate_oauth_ref(&instance.oauth_provider, &instance.name, "Custom")?;
+        }
+    }
 
     Ok(())
 }
@@ -772,6 +918,24 @@ impl InstanceName for ProviderInstanceConfig {
 }
 
 impl InstanceName for AnthropicInstanceConfig {
+    fn get_name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl InstanceName for AzureOpenAIInstanceConfig {
+    fn get_name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl InstanceName for BedrockInstanceConfig {
+    fn get_name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl InstanceName for CustomProviderInstanceConfig {
     fn get_name(&self) -> &str {
         &self.name
     }
@@ -884,6 +1048,9 @@ mod tests {
                     cache: CacheConfig::default(),
                 }],
                 gemini: vec![],
+                azure_openai: vec![],
+                bedrock: vec![],
+                custom: vec![],
             },
             observability: ObservabilityConfig::default(),
             oauth_providers: vec![],

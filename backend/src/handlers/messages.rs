@@ -116,7 +116,7 @@ pub async fn handle_messages(
     let routing_duration = routing_start.elapsed().as_millis();
 
     // Record provider in span
-    span.record("provider", route_info.provider.to_string().as_str());
+    span.record("provider", route_info.provider_name.as_str());
 
     tracing::debug!(
         parent: &span,
@@ -125,7 +125,7 @@ pub async fn handle_messages(
         span_type = "routing",
         duration_ms = routing_duration,
         status = "ok",
-        target_provider = route_info.provider.to_string().as_str(),
+        target_provider = route_info.provider_name.as_str(),
         "Routing span completed"
     );
 
@@ -138,11 +138,11 @@ pub async fn handle_messages(
     let anthropic_request = request;
 
     // 4. Get LoadBalancer for Anthropic provider
-    let load_balancers_map = state.load_balancers.load();
-    let load_balancer = load_balancers_map
-        .get(&crate::router::Provider::Anthropic)
-        .ok_or_else(|| AppError::ProviderDisabled("Anthropic provider not configured".to_string()))?
-        .clone();
+    let registry = state.registry.load();
+    let registered = registry
+        .get("anthropic")
+        .ok_or_else(|| AppError::ProviderDisabled("Anthropic provider not configured".to_string()))?;
+    let load_balancer = registered.load_balancer.clone();
 
     // 3. Execute request with sticky session (returns SessionResult)
     let http_client = state.http_client.clone();
@@ -156,10 +156,10 @@ pub async fn handle_messages(
             let oauth_manager = oauth_manager.clone();
             async move {
                 // Extract config from the instance
-                let config = match &instance.config {
-                    crate::load_balancer::ProviderInstanceConfigEnum::Anthropic(cfg) => cfg.as_ref(),
-                    _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
-                };
+                let config = instance.config
+                    .as_any()
+                    .downcast_ref::<crate::config::AnthropicInstanceConfig>()
+                    .ok_or_else(|| AppError::InternalError("Invalid instance config type".to_string()))?;
 
                 // Get OAuth token if needed
                 let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
@@ -209,7 +209,7 @@ pub async fn handle_messages(
     .await?;
 
     let instance_name = session_result.instance_name;
-    let provider_name = route_info.provider.as_str();
+    let provider_name = route_info.provider_name.as_str();
     let response = session_result.result?;
     let duration_ms = start.elapsed().as_millis() as i64;
 

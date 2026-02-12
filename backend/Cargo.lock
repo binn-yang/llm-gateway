@@ -2076,6 +2076,7 @@ dependencies = [
  "fs2",
  "futures",
  "futures-util",
+ "hmac",
  "hostname",
  "httpmock",
  "indicatif",

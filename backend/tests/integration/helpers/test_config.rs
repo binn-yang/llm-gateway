@@ -92,6 +92,9 @@ pub fn create_stress_test_config(
             openai: openai_instances,
             anthropic: anthropic_instances,
             gemini: vec![],
+            azure_openai: vec![],
+            bedrock: vec![],
+            custom: vec![],
         },
         oauth_providers: vec![],
         observability: ObservabilityConfig {
@@ -198,6 +201,9 @@ pub fn create_weighted_instance_config(mock_url: &str) -> Config {
             ],
             anthropic: vec![],
             gemini: vec![],
+            azure_openai: vec![],
+            bedrock: vec![],
+            custom: vec![],
         },
         oauth_providers: vec![],
         observability: ObservabilityConfig {
@@ -282,6 +288,9 @@ pub fn create_failover_config(primary_url: &str, backup_url: &str) -> Config {
             ],
             anthropic: vec![],
             gemini: vec![],
+            azure_openai: vec![],
+            bedrock: vec![],
+            custom: vec![],
         },
         oauth_providers: vec![],
         observability: ObservabilityConfig {

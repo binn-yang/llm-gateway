@@ -1,5 +1,10 @@
+pub mod azure;
+pub mod bedrock;
 pub mod chat_completions;
+pub mod common;
+pub mod custom;
 pub mod gemini_native;
 pub mod health;
 pub mod messages;
 pub mod models;
+pub mod openai_responses;

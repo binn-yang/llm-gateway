@@ -2,12 +2,12 @@ use crate::{
     auth::AuthInfo,
     converters,
     error::AppError,
-    load_balancer::LoadBalancer,
     models::openai::{ChatCompletionRequest, ChatCompletionResponse},
     observability::{RequestEvent, RequestLogger},
     providers,
+    registry::ProviderRegistry,
     retry::RequestStatus,
-    router::{ModelRouter, Provider},
+    router::ModelRouter,
     streaming,
 };
 use axum::{
@@ -16,7 +16,6 @@ use axum::{
     Extension, Json,
 };
 use chrono::{Timelike, Utc, Local};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -26,7 +25,7 @@ pub struct AppState {
     pub config: Arc<arc_swap::ArcSwap<crate::config::Config>>,
     pub router: Arc<ModelRouter>,
     pub http_client: reqwest::Client,
-    pub load_balancers: Arc<arc_swap::ArcSwap<HashMap<Provider, Arc<LoadBalancer>>>>,
+    pub registry: Arc<arc_swap::ArcSwap<ProviderRegistry>>,
     pub request_logger: Option<Arc<RequestLogger>>,
     /// OAuth token store for provider authentication
     pub token_store: Option<Arc<crate::oauth::TokenStore>>,
@@ -108,7 +107,7 @@ pub async fn handle_chat_completions(
     let routing_duration = routing_start.elapsed().as_millis();
 
     // Record provider in span
-    span.record("provider", route_info.provider.to_string().as_str());
+    span.record("provider", route_info.provider_name.as_str());
 
     tracing::debug!(
         parent: &span,
@@ -117,21 +116,25 @@ pub async fn handle_chat_completions(
         span_type = "routing",
         duration_ms = routing_duration,
         status = "ok",
-        target_provider = route_info.provider.to_string().as_str(),
+        target_provider = route_info.provider_name.as_str(),
         requires_conversion = route_info.requires_conversion,
         "Routing span completed"
     );
 
     // Route based on provider (model name is passed through directly)
-    let mut response = match route_info.provider {
-        Provider::OpenAI => {
+    let provider_name = &route_info.provider_name;
+    let mut response = match provider_name.as_str() {
+        "openai" => {
             handle_openai_request(&state, &auth, request, is_stream, &model, &request_id, start, &span).await
         }
-        Provider::Anthropic => {
+        "anthropic" => {
             handle_anthropic_request(&state, &auth, request, is_stream, &model, &request_id, start, &span).await
         }
-        Provider::Gemini => {
+        "gemini" => {
             handle_gemini_request(&state, &auth, request, is_stream, &model, &request_id, start, &span).await
+        }
+        other => {
+            return Err(AppError::ProviderDisabled(format!("Provider '{}' not supported for /v1/chat/completions", other)));
         }
     }?;
 
@@ -155,11 +158,11 @@ async fn handle_openai_request(
     span: &tracing::Span,
 ) -> Result<Response, AppError> {
     // Get LoadBalancer for OpenAI provider
-    let load_balancers_map = state.load_balancers.load();
-    let load_balancer = load_balancers_map
-        .get(&crate::router::Provider::OpenAI)
-        .ok_or_else(|| AppError::ProviderDisabled("OpenAI provider not configured".to_string()))?
-        .clone();
+    let registry = state.registry.load();
+    let registered = registry
+        .get("openai")
+        .ok_or_else(|| AppError::ProviderDisabled("OpenAI provider not configured".to_string()))?;
+    let load_balancer = registered.load_balancer.clone();
 
     // Execute request with sticky session (returns SessionResult)
     let request_clone = request.clone();
@@ -174,10 +177,10 @@ async fn handle_openai_request(
             let oauth_manager = oauth_manager.clone();
             async move {
                 // Extract config from the instance
-                let config = match &instance.config {
-                    crate::load_balancer::ProviderInstanceConfigEnum::Generic(cfg) => cfg.as_ref(),
-                    _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
-                };
+                let config = instance.config
+                    .as_any()
+                    .downcast_ref::<crate::config::ProviderInstanceConfig>()
+                    .ok_or_else(|| AppError::InternalError("Invalid instance config type".to_string()))?;
 
                 // Get OAuth token if needed
                 let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
@@ -467,11 +470,11 @@ async fn handle_anthropic_request(
     );
 
     // Get LoadBalancer for Anthropic provider
-    let load_balancers_map = state.load_balancers.load();
-    let load_balancer = load_balancers_map
-        .get(&crate::router::Provider::Anthropic)
-        .ok_or_else(|| AppError::ProviderDisabled("Anthropic provider not configured".to_string()))?
-        .clone();
+    let registry = state.registry.load();
+    let registered = registry
+        .get("anthropic")
+        .ok_or_else(|| AppError::ProviderDisabled("Anthropic provider not configured".to_string()))?;
+    let load_balancer = registered.load_balancer.clone();
 
     // Execute request with sticky session (returns SessionResult)
     let http_client = state.http_client.clone();
@@ -485,10 +488,10 @@ async fn handle_anthropic_request(
             let oauth_manager = oauth_manager.clone();
             async move {
                 // Extract config from the instance
-                let config = match &instance.config {
-                    crate::load_balancer::ProviderInstanceConfigEnum::Anthropic(cfg) => cfg.as_ref(),
-                    _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
-                };
+                let config = instance.config
+                    .as_any()
+                    .downcast_ref::<crate::config::AnthropicInstanceConfig>()
+                    .ok_or_else(|| AppError::InternalError("Invalid instance config type".to_string()))?;
 
                 // Apply automatic caching based on configuration
                 converters::openai_to_anthropic::apply_auto_caching(&mut anthropic_request, &config.cache);
@@ -730,11 +733,11 @@ async fn handle_gemini_request(
     );
 
     // Get LoadBalancer for Gemini provider
-    let load_balancers_map = state.load_balancers.load();
-    let load_balancer = load_balancers_map
-        .get(&crate::router::Provider::Gemini)
-        .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?
-        .clone();
+    let registry = state.registry.load();
+    let registered = registry
+        .get("gemini")
+        .ok_or_else(|| AppError::ProviderDisabled("Gemini provider not configured".to_string()))?;
+    let load_balancer = registered.load_balancer.clone();
 
     // Execute request with sticky session (returns SessionResult)
     let http_client = state.http_client.clone();
@@ -750,10 +753,10 @@ async fn handle_gemini_request(
             let oauth_manager = oauth_manager.clone();
             async move {
                 // Extract config from the instance
-                let config = match &instance.config {
-                    crate::load_balancer::ProviderInstanceConfigEnum::Generic(cfg) => cfg.as_ref(),
-                    _ => return Err(AppError::InternalError("Invalid instance config type".to_string())),
-                };
+                let config = instance.config
+                    .as_any()
+                    .downcast_ref::<crate::config::ProviderInstanceConfig>()
+                    .ok_or_else(|| AppError::InternalError("Invalid instance config type".to_string()))?;
 
                 // Get OAuth token if needed
                 let oauth_token = if config.auth_mode == crate::config::AuthMode::OAuth {
@@ -1054,6 +1057,9 @@ mod tests {
                     auth_mode: crate::config::AuthMode::Bearer,
                     oauth_provider: None,
                 }],
+                azure_openai: vec![],
+                bedrock: vec![],
+                custom: vec![],
             },
             observability: crate::config::ObservabilityConfig::default(),
             oauth_providers: vec![],
@@ -1062,14 +1068,13 @@ mod tests {
         let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(config)));
         let router = Arc::new(ModelRouter::new(config.clone()));
         let http_client = reqwest::Client::new();
-        let empty_lb: std::collections::HashMap<crate::router::Provider, Arc<crate::load_balancer::LoadBalancer>> = std::collections::HashMap::new();
-        let load_balancers = Arc::new(arc_swap::ArcSwap::from_pointee(empty_lb));
+        let registry = Arc::new(arc_swap::ArcSwap::from_pointee(ProviderRegistry::new()));
 
         AppState {
             config,
             router,
             http_client,
-            load_balancers,
+            registry,
             request_logger: None,
             token_store: None,
             oauth_manager: None,

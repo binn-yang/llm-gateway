@@ -108,6 +108,9 @@ mod tests {
                     auth_mode: crate::config::AuthMode::Bearer,
                     oauth_provider: None,
                 }],
+                azure_openai: vec![],
+                bedrock: vec![],
+                custom: vec![],
             },
             observability: crate::config::ObservabilityConfig::default(),
             oauth_providers: vec![],
@@ -116,14 +119,13 @@ mod tests {
         let config = Arc::new(arc_swap::ArcSwap::new(Arc::new(config)));
         let router = Arc::new(ModelRouter::new(config.clone()));
         let http_client = reqwest::Client::new();
-        let empty_lb: std::collections::HashMap<crate::router::Provider, Arc<crate::load_balancer::LoadBalancer>> = std::collections::HashMap::new();
-        let load_balancers = Arc::new(arc_swap::ArcSwap::from_pointee(empty_lb));
+        let registry = Arc::new(arc_swap::ArcSwap::from_pointee(crate::registry::ProviderRegistry::new()));
 
         AppState {
             config,
             router,
             http_client,
-            load_balancers,
+            registry,
             request_logger: None,
             token_store: None,
             oauth_manager: None,

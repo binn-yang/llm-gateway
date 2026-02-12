@@ -1,4 +1,4 @@
-use crate::config::{AnthropicInstanceConfig, ProviderInstanceConfig};
+use crate::provider_config::ProviderConfig;
 use dashmap::DashMap;
 use rand::seq::SliceRandom;
 use rand::Rng;
@@ -138,66 +138,8 @@ fn calculate_backoff(consecutive_failures: u32, base_timeout_secs: u64) -> Durat
 
 #[derive(Clone)]
 pub struct ProviderInstance {
-    pub name: Arc<str>,               // Shared string to avoid clone
-    pub config: ProviderInstanceConfigEnum,
-}
-
-#[derive(Clone)]
-pub enum ProviderInstanceConfigEnum {
-    Generic(Arc<ProviderInstanceConfig>),
-    Anthropic(Arc<AnthropicInstanceConfig>),
-}
-
-// Helper trait to access common fields
-impl ProviderInstanceConfigEnum {
-    pub fn enabled(&self) -> bool {
-        match self {
-            Self::Generic(c) => c.enabled,
-            Self::Anthropic(c) => c.enabled,
-        }
-    }
-
-    pub fn priority(&self) -> u32 {
-        match self {
-            Self::Generic(c) => c.priority,
-            Self::Anthropic(c) => c.priority,
-        }
-    }
-
-    pub fn failure_timeout_seconds(&self) -> u64 {
-        match self {
-            Self::Generic(c) => c.failure_timeout_seconds,
-            Self::Anthropic(c) => c.failure_timeout_seconds,
-        }
-    }
-
-    pub fn weight(&self) -> u32 {
-        match self {
-            Self::Generic(c) => c.weight,
-            Self::Anthropic(c) => c.weight,
-        }
-    }
-
-    pub fn api_key(&self) -> Option<&str> {
-        match self {
-            Self::Generic(c) => c.api_key.as_deref(),
-            Self::Anthropic(c) => c.api_key.as_deref(),
-        }
-    }
-
-    pub fn base_url(&self) -> &str {
-        match self {
-            Self::Generic(c) => &c.base_url,
-            Self::Anthropic(c) => &c.base_url,
-        }
-    }
-
-    pub fn timeout_seconds(&self) -> u64 {
-        match self {
-            Self::Generic(c) => c.timeout_seconds,
-            Self::Anthropic(c) => c.timeout_seconds,
-        }
-    }
+    pub name: Arc<str>,
+    pub config: Arc<dyn ProviderConfig>,
 }
 
 // ============================================================
@@ -808,7 +750,7 @@ mod tests {
     fn create_test_instance(name: &str, priority: u32) -> ProviderInstance {
         ProviderInstance {
             name: Arc::from(name),
-            config: ProviderInstanceConfigEnum::Generic(Arc::new(ProviderInstanceConfig {
+            config: Arc::new(crate::config::ProviderInstanceConfig {
                 name: name.to_string(),
                 enabled: true,
                 api_key: Some("test-key".to_string()),
@@ -819,14 +761,14 @@ mod tests {
                 weight: 100,
                 auth_mode: crate::config::AuthMode::Bearer,
                 oauth_provider: None,
-            })),
+            }),
         }
     }
 
     fn create_test_instance_disabled(name: &str, priority: u32) -> ProviderInstance {
         ProviderInstance {
             name: Arc::from(name),
-            config: ProviderInstanceConfigEnum::Generic(Arc::new(ProviderInstanceConfig {
+            config: Arc::new(crate::config::ProviderInstanceConfig {
                 name: name.to_string(),
                 enabled: false,
                 api_key: Some("test-key".to_string()),
@@ -837,7 +779,7 @@ mod tests {
                 weight: 100,
                 auth_mode: crate::config::AuthMode::Bearer,
                 oauth_provider: None,
-            })),
+            }),
         }
     }
 

@@ -41,8 +41,8 @@ impl std::fmt::Display for Provider {
 /// Route information for a model
 #[derive(Debug, Clone)]
 pub struct RouteInfo {
-    /// The provider to use for this model
-    pub provider: Provider,
+    /// Provider name string (e.g. "openai", "anthropic", "gemini")
+    pub provider_name: String,
     /// Whether protocol conversion is required (true for non-OpenAI providers when using OpenAI endpoint)
     pub requires_conversion: bool,
 }
@@ -83,39 +83,41 @@ impl ModelRouter {
 
         // Match model to provider using prefix matching
         let provider_name = self.match_model_to_provider(model, &config)?;
-        let provider: Provider = provider_name.parse()?;
 
         // Check if the provider has at least one enabled instance
-        match provider {
-            Provider::OpenAI => {
+        match provider_name.as_str() {
+            "openai" => {
                 if !config.providers.openai.iter().any(|p| p.enabled) {
                     return Err(AppError::ProviderDisabled(
                         "OpenAI provider has no enabled instances".to_string(),
                     ));
                 }
             }
-            Provider::Anthropic => {
+            "anthropic" => {
                 if !config.providers.anthropic.iter().any(|p| p.enabled) {
                     return Err(AppError::ProviderDisabled(
                         "Anthropic provider has no enabled instances".to_string(),
                     ));
                 }
             }
-            Provider::Gemini => {
+            "gemini" => {
                 if !config.providers.gemini.iter().any(|p| p.enabled) {
                     return Err(AppError::ProviderDisabled(
                         "Gemini provider has no enabled instances".to_string(),
                     ));
                 }
             }
+            _ => {
+                // For dynamically registered providers, assume enabled if in routing rules
+            }
         }
 
         // Determine if conversion is required
-        // Only OpenAI models don't need conversion when using OpenAI endpoint
-        let requires_conversion = provider != Provider::OpenAI;
+        // Only OpenAI-protocol providers don't need conversion when using OpenAI endpoint
+        let requires_conversion = provider_name != "openai";
 
         Ok(RouteInfo {
-            provider,
+            provider_name,
             requires_conversion,
         })
     }
@@ -236,6 +238,9 @@ mod tests {
                     auth_mode: crate::config::AuthMode::Bearer,
                     oauth_provider: None,
                 }],
+                azure_openai: vec![],
+                bedrock: vec![],
+                custom: vec![],
             },
             observability: crate::config::ObservabilityConfig::default(),
             oauth_providers: vec![],
@@ -248,7 +253,7 @@ mod tests {
         let router = ModelRouter::new(config);
 
         let route = router.route("gpt-4-turbo-2024-04-09").unwrap();
-        assert_eq!(route.provider, Provider::OpenAI);
+        assert_eq!(route.provider_name, "openai");
         assert!(!route.requires_conversion); // OpenAI doesn't need conversion
     }
 
@@ -258,7 +263,7 @@ mod tests {
         let router = ModelRouter::new(config);
 
         let route = router.route("claude-3-5-sonnet-20241022").unwrap();
-        assert_eq!(route.provider, Provider::Anthropic);
+        assert_eq!(route.provider_name, "anthropic");
         assert!(route.requires_conversion); // Anthropic requires conversion
     }
 
@@ -268,7 +273,7 @@ mod tests {
         let router = ModelRouter::new(config);
 
         let route = router.route("gemini-1.5-pro").unwrap();
-        assert_eq!(route.provider, Provider::Gemini);
+        assert_eq!(route.provider_name, "gemini");
         assert!(route.requires_conversion); // Gemini requires conversion
     }
 
@@ -279,7 +284,7 @@ mod tests {
 
         // Test longest-prefix-first matching (models/gemini- should match before gemini-)
         let route = router.route("models/gemini-1.5-pro-latest").unwrap();
-        assert_eq!(route.provider, Provider::Gemini);
+        assert_eq!(route.provider_name, "gemini");
         assert!(route.requires_conversion);
     }
 
@@ -290,7 +295,7 @@ mod tests {
 
         // Unknown model should fallback to default provider (openai)
         let route = router.route("unknown-model-xyz").unwrap();
-        assert_eq!(route.provider, Provider::OpenAI);
+        assert_eq!(route.provider_name, "openai");
     }
 
     #[test]
@@ -319,11 +324,11 @@ mod tests {
         let router = ModelRouter::new(config);
 
         // Test that gpt- prefix matches for various GPT models
-        assert_eq!(router.route("gpt-4").unwrap().provider, Provider::OpenAI);
-        assert_eq!(router.route("gpt-3.5-turbo").unwrap().provider, Provider::OpenAI);
+        assert_eq!(router.route("gpt-4").unwrap().provider_name, "openai");
+        assert_eq!(router.route("gpt-3.5-turbo").unwrap().provider_name, "openai");
 
         // Test that o1- prefix matches for O1 models
-        assert_eq!(router.route("o1-preview").unwrap().provider, Provider::OpenAI);
+        assert_eq!(router.route("o1-preview").unwrap().provider_name, "openai");
     }
 
     #[test]
