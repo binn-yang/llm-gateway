@@ -70,10 +70,9 @@ pub async fn setup_anthropic_streaming_mock(
                 let sse_body = create_streaming_response(num_chunks, chunk_interval_ms);
                 ResponseTemplate::new(200)
                     .set_delay(Duration::from_millis(latency_ms))
-                    .insert_header("content-type", "text/event-stream")
+                    .set_body_raw(sse_body, "text/event-stream")
                     .insert_header("cache-control", "no-cache")
                     .insert_header("connection", "keep-alive")
-                    .set_body_string(sse_body)
             } else {
                 let response = create_messages_response("claude-3-5-sonnet-20241022");
                 ResponseTemplate::new(200)
