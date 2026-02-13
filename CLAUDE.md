@@ -37,11 +37,11 @@ cargo test                          # 运行测试
 
 ### OAuth 认证 (v0.5.0)
 ```bash
-# Anthropic OAuth 登录(手动 URL 复制流程)
+# Anthropic OAuth 登录(统一手动粘贴流程)
 ./target/release/llm-gateway oauth login anthropic
-# 1. 浏览器打开授权页面
+# 1. 复制显示的授权 URL 到浏览器打开
 # 2. 授权后手动复制完整的回调 URL
-# 3. 粘贴 URL 到 CLI 提示符
+# 3. 粘贴回调 URL 到 CLI 提示符
 
 # Gemini OAuth 登录 (gemini-cli / antigravity)
 ./target/release/llm-gateway oauth login gemini-cli
@@ -254,7 +254,7 @@ client_secret = "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"
 auth_url = "https://accounts.google.com/o/oauth2/v2/auth"
 # Google OAuth Token 端点
 token_url = "https://oauth2.googleapis.com/token"
-# 本地回调地址（需要用户手动复制 URL）
+# 回调地址（授权后手动复制完整 URL 粘贴到 CLI）
 redirect_uri = "http://localhost:45462"
 # 完整权限列表
 scopes = [

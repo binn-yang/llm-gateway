@@ -1,7 +1,7 @@
 use crate::{
     auth::AuthInfo,
     error::AppError,
-    handlers::common::resolve_oauth_token,
+    handlers::common::{extract_and_validate_model, resolve_oauth_token},
     streaming,
 };
 use axum::{
@@ -22,11 +22,7 @@ pub async fn handle(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Response, AppError> {
     let _start = Instant::now();
-    let model = body
-        .get("model")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
+    let model = extract_and_validate_model(&body)?;
     let is_stream = body
         .get("stream")
         .and_then(|v| v.as_bool())

@@ -29,6 +29,19 @@ pub fn convert_response(
     let content = extract_text_from_parts(&candidate.content.parts);
     let tool_calls = extract_tool_calls_from_parts(&candidate.content.parts);
 
+    // Log diagnostic info when content is empty with non-STOP finish_reason
+    if content.is_empty() {
+        if let Some(reason) = &candidate.finish_reason {
+            if reason != "STOP" {
+                tracing::warn!(
+                    finish_reason = %reason,
+                    parts_count = candidate.content.parts.len(),
+                    "Gemini returned empty content with non-STOP finish_reason"
+                );
+            }
+        }
+    }
+
     // Map finish reason
     let finish_reason = candidate.finish_reason.as_ref().map(|reason| {
         // Gemini uses STOP, SAFETY, etc. Map to OpenAI equivalents

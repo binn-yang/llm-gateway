@@ -544,7 +544,13 @@ pub async fn handle_stream_generate_content_any(
         });
     }
 
-    Ok(sse_stream.into_response())
+    let mut response = sse_stream.into_response();
+    response.headers_mut().insert(
+        "X-Request-ID",
+        axum::http::HeaderValue::from_str(&request_id)
+            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("invalid-request-id")),
+    );
+    Ok(response)
 }
 
 /// 处理 POST /v1beta/models/:model:countTokens

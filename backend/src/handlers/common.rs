@@ -3,6 +3,35 @@ use crate::provider_config::ProviderConfig;
 use crate::provider_trait::{LlmProvider, UpstreamRequest};
 use std::sync::Arc;
 
+/// Extract and validate model name from request body.
+///
+/// Applies the same security validation as `router.rs` (length 1-256, charset `[a-zA-Z0-9\-._/:]`).
+/// Path-routed handlers bypass ModelRouter, so they need this explicit check.
+pub fn extract_and_validate_model(body: &serde_json::Value) -> Result<String, AppError> {
+    let model = body
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    if model.is_empty() || model.len() > 256 {
+        return Err(AppError::ModelNotFound(
+            "Invalid model name: must be between 1 and 256 characters".to_string(),
+        ));
+    }
+
+    let is_valid = model
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '.' || c == '_' || c == '/' || c == ':');
+    if !is_valid {
+        return Err(AppError::ModelNotFound(format!(
+            "Invalid model name '{}': only alphanumeric characters, hyphens, dots, underscores, slashes, and colons are allowed",
+            model
+        )));
+    }
+
+    Ok(model.to_string())
+}
+
 /// Send a request via the provider trait and check the response status.
 ///
 /// This wraps `provider.send_request()` with HTTP status code checking,

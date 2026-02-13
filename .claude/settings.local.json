@@ -52,7 +52,8 @@
       "Skill(frontend-design:frontend-design)",
       "Bash(for i in 1 2 3)",
       "Bash(do)",
-      "Bash(./run_stress_tests.sh:*)"
+      "Bash(./run_stress_tests.sh:*)",
+      "Skill(code-review:code-review)"
     ]
   }
 }

@@ -16,8 +16,7 @@ impl QuotaDatabase {
         &self,
         snapshot: &QuotaSnapshot,
     ) -> Result<(), sqlx::Error> {
-        let timestamp = Utc::now().timestamp_millis();
-        let created_at = Utc::now().timestamp_millis();
+        let now = Utc::now().timestamp_millis();
 
         sqlx::query(
             "INSERT INTO quota_snapshots
@@ -31,11 +30,11 @@ impl QuotaDatabase {
         .bind(&snapshot.provider)
         .bind(&snapshot.instance)
         .bind(&snapshot.auth_mode)
-        .bind(timestamp)
+        .bind(now)
         .bind(snapshot.status.as_str())
         .bind(&snapshot.error_message)
         .bind(snapshot.quota_data.to_string())
-        .bind(created_at)
+        .bind(now)
         .execute(&self.pool)
         .await?;
 

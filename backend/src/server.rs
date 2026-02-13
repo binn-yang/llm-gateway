@@ -1,6 +1,7 @@
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use axum::{extract::DefaultBodyLimit, middleware, routing::{get, post}, Router};
+use futures::FutureExt;
 use sqlx::SqlitePool;
 use std::{net::SocketAddr, sync::Arc};
 use tower_http::trace::TraceLayer;
@@ -105,7 +106,13 @@ pub async fn start_server(config: Config) -> Result<()> {
 
         // Start pricing updater background task for periodic updates
         tokio::spawn(async move {
-            pricing_updater.start_background_task().await;
+            let result = std::panic::AssertUnwindSafe(pricing_updater.start_background_task())
+                .catch_unwind()
+                .await;
+            match result {
+                Ok(()) => tracing::warn!("pricing_updater background task exited unexpectedly"),
+                Err(e) => tracing::error!(panic = ?e, "pricing_updater background task panicked"),
+            }
         });
         tracing::info!("Pricing updater started (checks every hour)");
 
@@ -349,14 +356,32 @@ fn register_provider<C: crate::provider_config::ProviderConfig + Clone>(
         http_client.cloned(),
     ));
 
-    // Spawn background tasks
+    // Spawn background tasks with panic logging
     tokio::spawn({
         let lb = lb.clone();
-        async move { lb.health_recovery_loop().await; }
+        let name = provider_name.to_string();
+        async move {
+            let result = std::panic::AssertUnwindSafe(lb.health_recovery_loop())
+                .catch_unwind()
+                .await;
+            match result {
+                Ok(()) => tracing::warn!(provider = %name, "health_recovery_loop exited unexpectedly"),
+                Err(e) => tracing::error!(provider = %name, panic = ?e, "health_recovery_loop panicked"),
+            }
+        }
     });
     tokio::spawn({
         let lb = lb.clone();
-        async move { lb.session_cleanup_loop().await; }
+        let name = provider_name.to_string();
+        async move {
+            let result = std::panic::AssertUnwindSafe(lb.session_cleanup_loop())
+                .catch_unwind()
+                .await;
+            match result {
+                Ok(()) => tracing::warn!(provider = %name, "session_cleanup_loop exited unexpectedly"),
+                Err(e) => tracing::error!(provider = %name, panic = ?e, "session_cleanup_loop panicked"),
+            }
+        }
     });
 
     registry.register(provider_name.to_string(), provider_impl, lb);

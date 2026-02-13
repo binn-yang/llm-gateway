@@ -100,6 +100,9 @@ struct InstanceHealth {
     failure_window_start: Option<Instant>,  // Start of current failure window
 }
 
+// Session timeout: 1 hour of inactivity
+const SESSION_TIMEOUT: Duration = Duration::from_secs(3600);
+
 // Circuit breaker constants (hardcoded defaults)
 const FAILURE_THRESHOLD: u32 = 3;           // 3 failures trigger circuit open
 const FAILURE_WINDOW_SECS: u64 = 60;        // 60 second failure window
@@ -188,8 +191,6 @@ impl LoadBalancer {
         &self,
         api_key: &str,
     ) -> Option<ProviderInstance> {
-        const SESSION_TIMEOUT: Duration = Duration::from_secs(3600);  // 1 hour
-
         // Step 1: Check if session exists and is not expired
         if let Some(mut session) = self.sessions.get_mut(api_key) {
             let now = Instant::now();
@@ -429,7 +430,7 @@ impl LoadBalancer {
             interval.tick().await;
 
             let now = Instant::now();
-            let timeout = Duration::from_secs(3600);  // 1 hour no request considered expired
+            let timeout = SESSION_TIMEOUT;
 
             self.sessions.retain(|_key, session| {
                 now.duration_since(session.last_request_time) < timeout
@@ -621,7 +622,6 @@ impl LoadBalancer {
     ///
     /// Returns statistics about the migration process.
     pub async fn migrate_sessions_from(&self, old_lb: &LoadBalancer) -> MigrationStats {
-        const SESSION_TIMEOUT: Duration = Duration::from_secs(3600); // 1 hour
         let now = Instant::now();
 
         let mut stats = MigrationStats::default();

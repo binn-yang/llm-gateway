@@ -1,3 +1,4 @@
+use futures::FutureExt;
 use sqlx::SqlitePool;
 use tokio::sync::mpsc;
 use std::sync::Arc;
@@ -58,16 +59,24 @@ impl RequestLogger {
         let pool = Arc::new(pool);
         let pool_clone = pool.clone();
 
-        // Spawn background writer task
+        // Spawn background writer task with panic logging
         tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                if let Err(e) = Self::write_request(&pool_clone, &event).await {
-                    tracing::error!(
-                        request_id = %event.request_id,
-                        error = %e,
-                        "Failed to write request to database"
-                    );
+            let result = std::panic::AssertUnwindSafe(async {
+                while let Some(event) = rx.recv().await {
+                    if let Err(e) = Self::write_request(&pool_clone, &event).await {
+                        tracing::error!(
+                            request_id = %event.request_id,
+                            error = %e,
+                            "Failed to write request to database"
+                        );
+                    }
                 }
+            })
+            .catch_unwind()
+            .await;
+            match result {
+                Ok(()) => tracing::warn!("RequestLogger background writer exited unexpectedly"),
+                Err(e) => tracing::error!(panic = ?e, "RequestLogger background writer panicked"),
             }
         });
 

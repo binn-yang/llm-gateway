@@ -298,7 +298,13 @@ pub async fn handle_messages(
             });
         }
 
-        Ok(sse_stream.into_response())
+        let mut response = sse_stream.into_response();
+        response.headers_mut().insert(
+            "X-Request-ID",
+            axum::http::HeaderValue::from_str(&request_id)
+                .unwrap_or_else(|_| axum::http::HeaderValue::from_static("invalid-request-id")),
+        );
+        Ok(response)
     } else {
         // 非流式响应 - 返回原生 Anthropic JSON
         let body: MessagesResponse = response.json().await?;

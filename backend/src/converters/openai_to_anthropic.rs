@@ -255,21 +255,32 @@ fn apply_json_mode_to_system(
     };
 
     // Append JSON instruction to existing system message
-    let combined = match system {
+    let result = match system {
         Some(AnthropicMessageContent::Text(text)) => {
-            format!("{}{}", text, json_instruction)
+            AnthropicMessageContent::Text(format!("{}{}", text, json_instruction))
         }
-        Some(AnthropicMessageContent::Blocks(_)) => {
-            // If system is blocks, we can't easily append, so log warning and just add instruction
-            tracing::warn!(
-                "System message contains blocks, appending JSON instruction as text only"
-            );
-            json_instruction.to_string()
+        Some(AnthropicMessageContent::Blocks(mut blocks)) => {
+            // Append JSON instruction as a new text block, preserving existing blocks
+            // (which may contain images, cache_control, etc.)
+            blocks.push(AnthropicContentBlock {
+                block_type: "text".to_string(),
+                text: Some(json_instruction.to_string()),
+                source: None,
+                id: None,
+                name: None,
+                input: None,
+                tool_use_id: None,
+                content: None,
+                is_error: None,
+                cache_control: None,
+                thinking: None,
+            });
+            AnthropicMessageContent::Blocks(blocks)
         }
-        None => json_instruction.to_string(),
+        None => AnthropicMessageContent::Text(json_instruction.to_string()),
     };
 
-    Ok(AnthropicMessageContent::Text(combined))
+    Ok(result)
 }
 
 /// Convert OpenAI tool_choice to Anthropic tool_choice
