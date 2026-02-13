@@ -1,3 +1,4 @@
+use crate::auth_utils::{apply_auth, AuthStyle};
 use crate::error::AppError;
 use crate::provider_config::ProviderConfig;
 use crate::provider_trait::{LlmProvider, ProviderProtocol, UpstreamRequest};
@@ -47,21 +48,18 @@ impl LlmProvider for AzureOpenAIProvider {
             azure_config.resource_name, deployment, azure_config.api_version
         );
 
-        let mut req = client
+        let req = client
             .post(&url)
             .header("Content-Type", "application/json")
             .timeout(std::time::Duration::from_secs(config.timeout_seconds()));
 
-        // Azure uses api-key header (not Bearer) for API key auth
-        if let Some(token) = &request.oauth_token {
-            req = req.header("Authorization", format!("Bearer {}", token));
-        } else if let Some(api_key) = config.api_key() {
-            req = req.header("api-key", api_key);
+        // Azure uses api-key header for API key, Bearer for OAuth
+        let auth_style = if request.oauth_token.is_some() {
+            AuthStyle::Bearer
         } else {
-            return Err(AppError::ConfigError(
-                "No authentication credentials provided".to_string(),
-            ));
-        }
+            AuthStyle::ApiKeyHeader
+        };
+        let req = apply_auth(req, config, request.oauth_token.as_deref(), auth_style)?;
 
         let response = req.json(&request.body).send().await?;
         Ok(response)

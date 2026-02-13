@@ -1,43 +1,6 @@
 use crate::{config::Config, error::AppError};
 use std::sync::Arc;
 
-/// Provider types
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Provider {
-    OpenAI,
-    Anthropic,
-    Gemini,
-}
-
-impl Provider {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Provider::OpenAI => "openai",
-            Provider::Anthropic => "anthropic",
-            Provider::Gemini => "gemini",
-        }
-    }
-}
-
-impl std::str::FromStr for Provider {
-    type Err = AppError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "openai" => Ok(Provider::OpenAI),
-            "anthropic" => Ok(Provider::Anthropic),
-            "gemini" => Ok(Provider::Gemini),
-            _ => Err(AppError::ConfigError(format!("Invalid provider: {}", s))),
-        }
-    }
-}
-
-impl std::fmt::Display for Provider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
-    }
-}
-
 /// Route information for a model
 #[derive(Debug, Clone)]
 pub struct RouteInfo {
@@ -329,22 +292,5 @@ mod tests {
 
         // Test that o1- prefix matches for O1 models
         assert_eq!(router.route("o1-preview").unwrap().provider_name, "openai");
-    }
-
-    #[test]
-    fn test_provider_from_string() {
-        assert_eq!("openai".parse::<Provider>().unwrap(), Provider::OpenAI);
-        assert_eq!("anthropic".parse::<Provider>().unwrap(), Provider::Anthropic);
-        assert_eq!("gemini".parse::<Provider>().unwrap(), Provider::Gemini);
-        assert_eq!("OpenAI".parse::<Provider>().unwrap(), Provider::OpenAI); // case insensitive
-
-        assert!("invalid".parse::<Provider>().is_err());
-    }
-
-    #[test]
-    fn test_provider_display() {
-        assert_eq!(Provider::OpenAI.to_string(), "openai");
-        assert_eq!(Provider::Anthropic.to_string(), "anthropic");
-        assert_eq!(Provider::Gemini.to_string(), "gemini");
     }
 }

@@ -24,89 +24,86 @@ pub trait ProviderConfig: Send + Sync + Debug + 'static {
 
 static DEFAULT_BEARER: AuthMode = AuthMode::Bearer;
 
-// Implement ProviderConfig for ProviderInstanceConfig (OpenAI, Gemini)
-impl ProviderConfig for crate::config::ProviderInstanceConfig {
-    fn name(&self) -> &str { &self.name }
-    fn enabled(&self) -> bool { self.enabled }
-    fn auth_mode(&self) -> &AuthMode { &self.auth_mode }
-    fn api_key(&self) -> Option<&str> { self.api_key.as_deref() }
-    fn oauth_provider(&self) -> Option<&str> { self.oauth_provider.as_deref() }
-    fn base_url(&self) -> &str { &self.base_url }
-    fn timeout_seconds(&self) -> u64 { self.timeout_seconds }
-    fn priority(&self) -> u32 { self.priority }
-    fn failure_timeout_seconds(&self) -> u64 { self.failure_timeout_seconds }
-    fn weight(&self) -> u32 { self.weight }
-    fn as_any(&self) -> &dyn Any { self }
+/// Macro to reduce boilerplate for ProviderConfig trait implementations.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// // Standard implementation (uses self.base_url, self.auth_mode, self.api_key)
+/// impl_provider_config!(ProviderInstanceConfig);
+///
+/// // Custom base_url (for providers like Azure where URL is constructed dynamically)
+/// impl_provider_config!(AzureOpenAIInstanceConfig, base_url = "https://azure.openai.azure.com");
+///
+/// // Full override (for providers like Bedrock that don't use standard auth)
+/// impl_provider_config!(BedrockInstanceConfig, base_url = "", auth_mode = &DEFAULT_BEARER, api_key = None);
+/// ```
+macro_rules! impl_provider_config {
+    // Standard implementation with all field defaults
+    ($config_type:ty) => {
+        impl ProviderConfig for $config_type {
+            fn name(&self) -> &str { &self.name }
+            fn enabled(&self) -> bool { self.enabled }
+            fn auth_mode(&self) -> &AuthMode { &self.auth_mode }
+            fn api_key(&self) -> Option<&str> { self.api_key.as_deref() }
+            fn oauth_provider(&self) -> Option<&str> { self.oauth_provider.as_deref() }
+            fn base_url(&self) -> &str { &self.base_url }
+            fn timeout_seconds(&self) -> u64 { self.timeout_seconds }
+            fn priority(&self) -> u32 { self.priority }
+            fn failure_timeout_seconds(&self) -> u64 { self.failure_timeout_seconds }
+            fn weight(&self) -> u32 { self.weight }
+            fn as_any(&self) -> &dyn Any { self }
+        }
+    };
+
+    // Custom base_url only
+    ($config_type:ty, base_url = $base_url:expr) => {
+        impl ProviderConfig for $config_type {
+            fn name(&self) -> &str { &self.name }
+            fn enabled(&self) -> bool { self.enabled }
+            fn auth_mode(&self) -> &AuthMode { &self.auth_mode }
+            fn api_key(&self) -> Option<&str> { self.api_key.as_deref() }
+            fn oauth_provider(&self) -> Option<&str> { self.oauth_provider.as_deref() }
+            fn base_url(&self) -> &str { $base_url }
+            fn timeout_seconds(&self) -> u64 { self.timeout_seconds }
+            fn priority(&self) -> u32 { self.priority }
+            fn failure_timeout_seconds(&self) -> u64 { self.failure_timeout_seconds }
+            fn weight(&self) -> u32 { self.weight }
+            fn as_any(&self) -> &dyn Any { self }
+        }
+    };
+
+    // Full custom implementation
+    ($config_type:ty, base_url = $base_url:expr, auth_mode = $auth_mode:expr, api_key = $api_key:expr) => {
+        impl ProviderConfig for $config_type {
+            fn name(&self) -> &str { &self.name }
+            fn enabled(&self) -> bool { self.enabled }
+            fn auth_mode(&self) -> &AuthMode { $auth_mode }
+            fn api_key(&self) -> Option<&str> { $api_key }
+            fn oauth_provider(&self) -> Option<&str> { None }
+            fn base_url(&self) -> &str { $base_url }
+            fn timeout_seconds(&self) -> u64 { self.timeout_seconds }
+            fn priority(&self) -> u32 { self.priority }
+            fn failure_timeout_seconds(&self) -> u64 { self.failure_timeout_seconds }
+            fn weight(&self) -> u32 { self.weight }
+            fn as_any(&self) -> &dyn Any { self }
+        }
+    };
 }
 
-// Implement ProviderConfig for AnthropicInstanceConfig
-impl ProviderConfig for crate::config::AnthropicInstanceConfig {
-    fn name(&self) -> &str { &self.name }
-    fn enabled(&self) -> bool { self.enabled }
-    fn auth_mode(&self) -> &AuthMode { &self.auth_mode }
-    fn api_key(&self) -> Option<&str> { self.api_key.as_deref() }
-    fn oauth_provider(&self) -> Option<&str> { self.oauth_provider.as_deref() }
-    fn base_url(&self) -> &str { &self.base_url }
-    fn timeout_seconds(&self) -> u64 { self.timeout_seconds }
-    fn priority(&self) -> u32 { self.priority }
-    fn failure_timeout_seconds(&self) -> u64 { self.failure_timeout_seconds }
-    fn weight(&self) -> u32 { self.weight }
-    fn as_any(&self) -> &dyn Any { self }
-}
+// Standard implementations (use all default field accessors)
+impl_provider_config!(crate::config::ProviderInstanceConfig);
+impl_provider_config!(crate::config::AnthropicInstanceConfig);
+impl_provider_config!(crate::config::CustomProviderInstanceConfig);
 
-// Implement ProviderConfig for AzureOpenAIInstanceConfig
-impl ProviderConfig for crate::config::AzureOpenAIInstanceConfig {
-    fn name(&self) -> &str { &self.name }
-    fn enabled(&self) -> bool { self.enabled }
-    fn auth_mode(&self) -> &AuthMode { &self.auth_mode }
-    fn api_key(&self) -> Option<&str> { self.api_key.as_deref() }
-    fn oauth_provider(&self) -> Option<&str> { self.oauth_provider.as_deref() }
-    fn base_url(&self) -> &str {
-        // Azure base URL is constructed dynamically from resource_name in the provider
-        "https://azure.openai.azure.com"
-    }
-    fn timeout_seconds(&self) -> u64 { self.timeout_seconds }
-    fn priority(&self) -> u32 { self.priority }
-    fn failure_timeout_seconds(&self) -> u64 { self.failure_timeout_seconds }
-    fn weight(&self) -> u32 { self.weight }
-    fn as_any(&self) -> &dyn Any { self }
-}
+// Azure has a static base_url placeholder (actual URL is built from resource_name)
+impl_provider_config!(crate::config::AzureOpenAIInstanceConfig,
+    base_url = "https://azure.openai.azure.com"
+);
 
-// Implement ProviderConfig for BedrockInstanceConfig
-impl ProviderConfig for crate::config::BedrockInstanceConfig {
-    fn name(&self) -> &str { &self.name }
-    fn enabled(&self) -> bool { self.enabled }
-    fn auth_mode(&self) -> &AuthMode {
-        // Bedrock uses SigV4, not bearer/oauth
-        &DEFAULT_BEARER
-    }
-    fn api_key(&self) -> Option<&str> {
-        // Bedrock doesn't use API keys
-        None
-    }
-    fn oauth_provider(&self) -> Option<&str> { None }
-    fn base_url(&self) -> &str {
-        // Base URL is constructed dynamically from region in the provider
-        ""
-    }
-    fn timeout_seconds(&self) -> u64 { self.timeout_seconds }
-    fn priority(&self) -> u32 { self.priority }
-    fn failure_timeout_seconds(&self) -> u64 { self.failure_timeout_seconds }
-    fn weight(&self) -> u32 { self.weight }
-    fn as_any(&self) -> &dyn Any { self }
-}
-
-// Implement ProviderConfig for CustomProviderInstanceConfig
-impl ProviderConfig for crate::config::CustomProviderInstanceConfig {
-    fn name(&self) -> &str { &self.name }
-    fn enabled(&self) -> bool { self.enabled }
-    fn auth_mode(&self) -> &AuthMode { &self.auth_mode }
-    fn api_key(&self) -> Option<&str> { self.api_key.as_deref() }
-    fn oauth_provider(&self) -> Option<&str> { self.oauth_provider.as_deref() }
-    fn base_url(&self) -> &str { &self.base_url }
-    fn timeout_seconds(&self) -> u64 { self.timeout_seconds }
-    fn priority(&self) -> u32 { self.priority }
-    fn failure_timeout_seconds(&self) -> u64 { self.failure_timeout_seconds }
-    fn weight(&self) -> u32 { self.weight }
-    fn as_any(&self) -> &dyn Any { self }
-}
+// Bedrock doesn't use API keys or bearer auth (uses SigV4)
+impl_provider_config!(crate::config::BedrockInstanceConfig,
+    base_url = "",
+    auth_mode = &DEFAULT_BEARER,
+    api_key = None
+);

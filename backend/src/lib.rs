@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod auth_utils;
 pub mod config;
 pub mod conversion_warnings;
 pub mod converters;

@@ -1,3 +1,4 @@
+use crate::auth_utils::{apply_auth, AuthStyle};
 use crate::error::AppError;
 use crate::provider_config::ProviderConfig;
 use async_trait::async_trait;
@@ -92,21 +93,12 @@ impl LlmProvider for OpenAIProvider {
             config.base_url().trim_end_matches('/')
         );
 
-        let mut req = client
+        let req = client
             .post(&url)
             .header("Content-Type", "application/json")
             .timeout(std::time::Duration::from_secs(config.timeout_seconds()));
 
-        // Bearer authentication
-        if let Some(token) = &request.oauth_token {
-            req = req.header("Authorization", format!("Bearer {}", token));
-        } else if let Some(api_key) = config.api_key() {
-            req = req.header("Authorization", format!("Bearer {}", api_key));
-        } else {
-            return Err(AppError::ConfigError(
-                "No authentication credentials provided".to_string(),
-            ));
-        }
+        let req = apply_auth(req, config, request.oauth_token.as_deref(), AuthStyle::Bearer)?;
 
         let response = req.json(&request.body).send().await?;
         Ok(response)
@@ -141,22 +133,19 @@ impl LlmProvider for AnthropicProvider {
             .map(|c| c.api_version.as_str())
             .unwrap_or("2023-06-01");
 
-        let mut req = client
+        let req = client
             .post(&url)
             .header("anthropic-version", api_version)
             .header("Content-Type", "application/json")
             .timeout(std::time::Duration::from_secs(config.timeout_seconds()));
 
-        // Anthropic uses x-api-key header (not Bearer) for API key auth
-        if let Some(token) = &request.oauth_token {
-            req = req.header("Authorization", format!("Bearer {}", token));
-        } else if let Some(api_key) = config.api_key() {
-            req = req.header("x-api-key", api_key);
+        // Anthropic uses x-api-key header for API key, Bearer for OAuth
+        let auth_style = if request.oauth_token.is_some() {
+            AuthStyle::Bearer
         } else {
-            return Err(AppError::ConfigError(
-                "No authentication credentials provided".to_string(),
-            ));
-        }
+            AuthStyle::XApiKey
+        };
+        let req = apply_auth(req, config, request.oauth_token.as_deref(), auth_style)?;
 
         let response = req.json(&request.body).send().await?;
         Ok(response)
@@ -194,21 +183,18 @@ impl LlmProvider for GeminiProvider {
             action
         );
 
-        let mut builder = client
+        let builder = client
             .post(&url)
             .header("Content-Type", "application/json")
             .timeout(std::time::Duration::from_secs(config.timeout_seconds()));
 
         // Gemini uses query param for API key, Bearer for OAuth
-        if let Some(token) = &request.oauth_token {
-            builder = builder.header("Authorization", format!("Bearer {}", token));
-        } else if let Some(api_key) = config.api_key() {
-            builder = builder.query(&[("key", api_key)]);
+        let auth_style = if request.oauth_token.is_some() {
+            AuthStyle::Bearer
         } else {
-            return Err(AppError::ConfigError(
-                "No authentication credentials provided".to_string(),
-            ));
-        }
+            AuthStyle::QueryParam
+        };
+        let mut builder = apply_auth(builder, config, request.oauth_token.as_deref(), auth_style)?;
 
         if request.stream {
             builder = builder.query(&[("alt", "sse")]);

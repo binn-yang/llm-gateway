@@ -1,3 +1,4 @@
+use crate::auth_utils::{apply_auth, AuthStyle};
 use crate::error::AppError;
 use crate::provider_config::ProviderConfig;
 use crate::provider_trait::{LlmProvider, ProviderProtocol, UpstreamRequest};
@@ -47,16 +48,7 @@ impl LlmProvider for CustomOpenAIProvider {
             }
         }
 
-        // Bearer authentication
-        if let Some(token) = &request.oauth_token {
-            req = req.header("Authorization", format!("Bearer {}", token));
-        } else if let Some(api_key) = config.api_key() {
-            req = req.header("Authorization", format!("Bearer {}", api_key));
-        } else {
-            return Err(AppError::ConfigError(
-                "No authentication credentials provided".to_string(),
-            ));
-        }
+        let req = apply_auth(req, config, request.oauth_token.as_deref(), AuthStyle::Bearer)?;
 
         let response = req.json(&request.body).send().await?;
         Ok(response)
