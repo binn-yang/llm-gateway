@@ -4,6 +4,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use subtle::ConstantTimeEq;
 use std::sync::Arc;
 
 /// Authentication information attached to each authenticated request
@@ -33,11 +34,11 @@ pub async fn auth_middleware(
     // Load current configuration
     let config = config.load();
 
-    // Validate token against configured API keys
+    // Validate token against configured API keys using constant-time comparison
     let api_key_config = config
         .api_keys
         .iter()
-        .find(|k| k.key == token && k.enabled)
+        .find(|k| k.enabled && k.key.as_bytes().ct_eq(token.as_bytes()).into())
         .ok_or_else(|| AppError::Unauthorized("Invalid or disabled API key".to_string()))?;
 
     // Attach authentication info to request

@@ -210,17 +210,21 @@ where
                         // 429 Rate Limit - mark instance unhealthy and delay retry
                         load_balancer.record_failure(&instance_name, failure_type.clone()).await;
 
+                        // Cap retry delay to prevent malicious upstream from blocking indefinitely
+                        let capped_delay = retry_after_secs.min(60);
+
                         tracing::warn!(
                             api_key_name = %crate::logging::sanitize_log_value(api_key_name),
                             instance = %instance_name,
-                            retry_after_secs,
+                            retry_after_secs = capped_delay,
+                            original_retry_after = retry_after_secs,
                             retry_count,
-                            "⏱️ Rate limit hit, delaying {}s before retry",
-                            retry_after_secs
+                            "⏱️ Rate limit hit, delaying {}s before retry (max 60s)",
+                            capped_delay
                         );
 
                         // Delay before retrying with different instance
-                        tokio::time::sleep(Duration::from_secs(retry_after_secs)).await;
+                        tokio::time::sleep(Duration::from_secs(capped_delay)).await;
                         retry_count += 1;
                         continue;
                     }

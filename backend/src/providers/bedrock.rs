@@ -88,7 +88,7 @@ impl LlmProvider for BedrockProvider {
             &bedrock_config.secret_access_key,
             bedrock_config.session_token.as_deref(),
             &bedrock_config.region,
-            "bedrock",
+            "bedrock-runtime",
         );
 
         // Build reqwest request with signed headers

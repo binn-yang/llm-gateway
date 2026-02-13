@@ -716,6 +716,39 @@ fn validate_config(cfg: &Config) -> anyhow::Result<()> {
     for instance in &cfg.providers.gemini {
         validate_instance(instance, "Gemini")?;
     }
+    for instance in &cfg.providers.azure_openai {
+        validate_azure_resource_name(&instance.resource_name)
+            .map_err(|e| anyhow::anyhow!("Azure OpenAI instance '{}': {}", instance.name, e))?;
+        // Validate auth mode for Azure
+        match instance.auth_mode {
+            AuthMode::Bearer => {
+                if instance.api_key.is_none() {
+                    anyhow::bail!(
+                        "Azure OpenAI instance '{}': api_key is required for bearer auth mode",
+                        instance.name
+                    );
+                }
+            }
+            AuthMode::OAuth => {
+                if instance.oauth_provider.is_none() {
+                    anyhow::bail!(
+                        "Azure OpenAI instance '{}': oauth_provider is required for oauth auth mode",
+                        instance.name
+                    );
+                }
+            }
+        }
+        if instance.priority < 1 {
+            anyhow::bail!("Azure OpenAI instance '{}': priority must be >= 1", instance.name);
+        }
+    }
+    for instance in &cfg.providers.bedrock {
+        validate_aws_region(&instance.region)
+            .map_err(|e| anyhow::anyhow!("Bedrock instance '{}': {}", instance.name, e))?;
+        if instance.priority < 1 {
+            anyhow::bail!("Bedrock instance '{}': priority must be >= 1", instance.name);
+        }
+    }
 
     // Validate at least one API key is configured
     if cfg.api_keys.is_empty() {
@@ -850,6 +883,28 @@ fn validate_anthropic_instance(instance: &AnthropicInstanceConfig) -> anyhow::Re
         }
     }
 
+    Ok(())
+}
+
+/// Azure resource name: 仅允许字母数字和连字符，1-63 字符
+fn validate_azure_resource_name(name: &str) -> anyhow::Result<()> {
+    if name.is_empty() || name.len() > 63 {
+        anyhow::bail!("Azure resource_name must be 1-63 characters, got {}", name.len());
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        anyhow::bail!("Azure resource_name contains invalid characters (only alphanumeric and '-' allowed): {}", name);
+    }
+    Ok(())
+}
+
+/// AWS region: 格式如 us-east-1, eu-west-2, ap-southeast-1
+fn validate_aws_region(region: &str) -> anyhow::Result<()> {
+    if region.is_empty() || region.len() > 25 {
+        anyhow::bail!("AWS region length invalid: {}", region);
+    }
+    if !region.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+        anyhow::bail!("AWS region contains invalid characters: {}", region);
+    }
     Ok(())
 }
 
