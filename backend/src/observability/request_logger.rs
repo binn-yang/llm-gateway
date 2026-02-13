@@ -30,6 +30,7 @@ pub struct RequestEvent {
     pub cache_write_cost: f64,
     pub cache_read_cost: f64,
     pub total_cost: f64,
+    pub session_id: Option<String>,
 }
 
 /// Async request logger with channel-based writes
@@ -125,8 +126,9 @@ impl RequestLogger {
                 model, endpoint, status, error_type, error_message,
                 input_tokens, output_tokens, total_tokens,
                 cache_creation_input_tokens, cache_read_input_tokens,
-                duration_ms, input_cost, output_cost, cache_write_cost, cache_read_cost, total_cost
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+                duration_ms, input_cost, output_cost, cache_write_cost, cache_read_cost, total_cost,
+                session_id
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
             "#
         )
         .bind(&event.request_id)
@@ -152,6 +154,7 @@ impl RequestLogger {
         .bind(event.cache_write_cost)
         .bind(event.cache_read_cost)
         .bind(event.total_cost)
+        .bind(&event.session_id)
         .execute(pool)
         .await?;
 
@@ -325,6 +328,7 @@ mod tests {
             cache_write_cost: 0.0,
             cache_read_cost: 0.0,
             total_cost: 0.0,
+            session_id: None,
         };
 
         assert_eq!(event.request_id, "test-123");

@@ -274,6 +274,7 @@ pub async fn handle_generate_content_any(
             cache_write_cost: 0.0,
             cache_read_cost: 0.0,
             total_cost: 0.0,
+            session_id: None,
         };
         logger.log_request(event).await;
     }
@@ -472,6 +473,7 @@ pub async fn handle_stream_generate_content_any(
             cache_write_cost: 0.0,
             cache_read_cost: 0.0,
             total_cost: 0.0,
+            session_id: None,
         };
         logger.log_request(event).await;
     }

@@ -244,6 +244,7 @@ async fn handle_openai_request(
                 cache_write_cost: 0.0,
                 cache_read_cost: 0.0,
                 total_cost: 0.0,
+                session_id: None,
             };
             logger.log_request(event).await;
         }
@@ -401,6 +402,7 @@ async fn handle_openai_request(
                 cache_write_cost: 0.0,
                 cache_read_cost: 0.0,
                 total_cost: 0.0,
+                session_id: None,
             };
             logger.log_request(event).await;
         }
@@ -535,6 +537,7 @@ async fn handle_anthropic_request(
                 cache_write_cost: 0.0,
                 cache_read_cost: 0.0,
                 total_cost: 0.0,
+                session_id: None,
             };
             logger.log_request(event).await;
         }
@@ -634,6 +637,7 @@ async fn handle_anthropic_request(
                 cache_write_cost: 0.0,
                 cache_read_cost: 0.0,
                 total_cost: 0.0,
+                session_id: None,
             };
             logger.log_request(event).await;
         }
@@ -769,6 +773,7 @@ async fn handle_gemini_request(
                 cache_write_cost: 0.0,
                 cache_read_cost: 0.0,
                 total_cost: 0.0,
+                session_id: None,
             };
             logger.log_request(event).await;
         }
@@ -871,6 +876,7 @@ async fn handle_gemini_request(
                 cache_write_cost: 0.0,
                 cache_read_cost: 0.0,
                 total_cost: 0.0,
+                session_id: None,
             };
             logger.log_request(event).await;
         }

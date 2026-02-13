@@ -19,6 +19,7 @@ pub mod registry;
 pub mod retry;
 pub mod router;
 pub mod server;
+pub mod session;
 pub mod signals;
 pub mod streaming;
 

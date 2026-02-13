@@ -55,6 +55,12 @@ pub async fn handle_messages(
     let model = request.model.clone();
     let is_stream = request.stream.unwrap_or(false);
 
+    // Extract session UUID from metadata.user_id for fine-grained sticky routing
+    let session_id = request.metadata.as_ref()
+        .and_then(|m| m.user_id.as_deref())
+        .and_then(crate::session::extract_session_id)
+        .map(|s| s.to_string());
+
     // Create request span for structured logging
     let span = tracing::info_span!(
         "request",
@@ -62,6 +68,7 @@ pub async fn handle_messages(
         api_key_name = %auth.api_key_name,
         model = %model,
         endpoint = "/v1/messages",
+        session_id = session_id.as_deref().unwrap_or("-"),
         provider = tracing::field::Empty,
         instance = tracing::field::Empty,
     );
@@ -147,9 +154,13 @@ pub async fn handle_messages(
     // 3. Execute request with sticky session (returns SessionResult)
     let http_client = state.http_client.clone();
     let oauth_manager = state.oauth_manager.clone();
+    let session_key = crate::session::compose_session_key(
+        &auth.api_key_name,
+        session_id.as_deref(),
+    );
     let session_result = crate::retry::execute_with_session(
         load_balancer.as_ref(),
-        &auth.api_key_name,
+        &session_key,
         |instance| {
             let http_client = http_client.clone();
             let anthropic_request = anthropic_request.clone();
@@ -224,6 +235,7 @@ pub async fn handle_messages(
                 cache_write_cost: 0.0,
                 cache_read_cost: 0.0,
                 total_cost: 0.0,
+                session_id: session_id.clone(),
             };
             logger.log_request(event).await;
         }
@@ -381,6 +393,7 @@ pub async fn handle_messages(
                 cache_write_cost: 0.0,
                 cache_read_cost: 0.0,
                 total_cost: 0.0,
+                session_id: session_id.clone(),
             };
             logger.log_request(event).await;
         }
