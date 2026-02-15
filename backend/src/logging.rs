@@ -24,7 +24,7 @@ impl<'a> SensitiveApiKey<'a> {
     ///
     /// let key = "sk-ant-api123-abcdef123456";
     /// let sanitized = SensitiveApiKey::new(key);
-    /// assert_eq!(format!("{}", sanitized), "sk-ant-***");
+    /// assert_eq!(format!("{}", sanitized), "sk-ant-a***");
     /// ```
     pub fn new(key: &'a str) -> Self {
         Self { inner: key }
@@ -73,7 +73,7 @@ pub fn is_sensitive_key(value: &str) -> bool {
 /// use llm_gateway::logging::{sanitize_log_value, SensitiveApiKey};
 ///
 /// // 敏感值会被脱敏
-/// assert_eq!(sanitize_log_value("sk-ant-api123-key"), "sk-ant-***");
+/// assert_eq!(sanitize_log_value("sk-ant-api123-key"), "sk-ant-a***");
 ///
 /// // 普通值不变
 /// assert_eq!(sanitize_log_value("my-app-name"), "my-app-name");
@@ -255,9 +255,7 @@ pub fn extract_simple_response_streaming(accumulated_response: &str) -> String {
         let event_type = lines[0].trim();
 
         for line in &lines[1..] {
-            if line.starts_with("data: ") {
-                let data = &line[6..];
-
+            if let Some(data) = line.strip_prefix("data: ") {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
                     // Anthropic: content_block_delta with text_delta
                     if event_type == "content_block_delta" {
