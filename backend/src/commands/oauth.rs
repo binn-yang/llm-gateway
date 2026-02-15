@@ -15,13 +15,10 @@ use std::sync::Arc;
 
 /// 尝试将 URL 复制到剪贴板
 fn try_copy_to_clipboard(url: &str) -> bool {
-    match ClipboardContext::new() {
-        Ok(mut ctx) => {
-            if let Ok(_) = ctx.set_contents(url.to_owned()) {
-                return true;
-            }
+    if let Ok(mut ctx) = ClipboardContext::new() {
+        if ctx.set_contents(url.to_owned()).is_ok() {
+            return true;
         }
-        Err(_) => {}
     }
     false
 }
@@ -66,16 +63,16 @@ pub async fn login(provider: String) -> Result<()> {
 /// OAuth login with manual URL copy flow (for remote callbacks)
 async fn manual_callback_flow(
     provider: String,
-    oauth_provider: &Box<dyn llm_gateway::oauth::providers::traits::OAuthProvider>,
+    oauth_provider: &dyn llm_gateway::oauth::providers::traits::OAuthProvider,
     token_store: Arc<TokenStore>,
     oauth_config: &llm_gateway::config::OAuthProviderConfig,
 ) -> Result<()> {
-    println!("{} {}", "[1/3]".cyan().bold(), "Generating PKCE parameters...");
+    println!("{} Generating PKCE parameters...", "[1/3]".cyan().bold());
     let pkce_params = generate_pkce_params();
     println!("  {} PKCE parameters generated", "✓".green());
     println!();
 
-    println!("{} {}", "[2/3]".cyan().bold(), "Opening browser for authentication...");
+    println!("{} Opening browser for authentication...", "[2/3]".cyan().bold());
 
     // Generate authorization URL
     let auth_url = oauth_provider
@@ -123,7 +120,7 @@ async fn manual_callback_flow(
     let callback_url = callback_url.trim();
 
     println!();
-    println!("{} {}", "[3/3]".cyan().bold(), "Processing authorization...");
+    println!("{} Processing authorization...", "[3/3]".cyan().bold());
 
     // Parse callback URL
     let parsed_url = url::Url::parse(callback_url)

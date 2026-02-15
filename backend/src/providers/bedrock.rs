@@ -61,7 +61,7 @@ impl LlmProvider for BedrockProvider {
 
         // Prepare request body (Bedrock expects Anthropic format without model field)
         let mut body = request.body;
-        body.as_object_mut().map(|obj| {
+        if let Some(obj) = body.as_object_mut() {
             obj.remove("model");
             // Bedrock uses its own version string
             if !obj.contains_key("anthropic_version") {
@@ -70,7 +70,7 @@ impl LlmProvider for BedrockProvider {
                     serde_json::Value::String("bedrock-2023-05-31".to_string()),
                 );
             }
-        });
+        }
 
         let body_bytes = serde_json::to_vec(&body)
             .map_err(|e| AppError::ConfigError(format!("Failed to serialize body: {}", e)))?;
@@ -168,6 +168,7 @@ fn sha256_hex(data: &[u8]) -> String {
 /// Sign an HTTP request with AWS SigV4.
 ///
 /// Returns a list of headers to add to the request.
+#[allow(clippy::too_many_arguments)]
 fn sigv4_sign(
     method: &str,
     url: &url::Url,

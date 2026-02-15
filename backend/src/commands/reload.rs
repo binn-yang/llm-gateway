@@ -25,20 +25,15 @@ pub async fn execute(pid_file: Option<PathBuf>) -> Result<()> {
         // Read PID from file
         let pid = PidFile::read(pid_file)?;
 
-        println!(
-            "{} {}",
-            "Reloading configuration",
-            format!("(PID: {})", pid)
-        );
+        println!("Reloading configuration (PID: {})", pid);
         info!("Sending SIGHUP to PID {} for config reload", pid);
 
         // Send SIGHUP for configuration reload
         send_signal_to_pid(pid, SignalKind::hangup())?;
 
-        println!("{}", "  Reload signal sent successfully");
+        println!("  Reload signal sent successfully");
         println!(
-            "  {}",
-            "Note: Check server logs to verify reload succeeded"
+            "  Note: Check server logs to verify reload succeeded"
         );
         info!("SIGHUP sent to PID {}", pid);
 

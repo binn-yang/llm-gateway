@@ -162,6 +162,7 @@ impl RequestLogger {
     }
 
     /// Update token counts for an existing request (used for streaming responses)
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_tokens(
         &self,
         request_id: &str,
@@ -239,6 +240,7 @@ impl RequestLogger {
     /// Log a failover event (non-blocking)
     ///
     /// Records circuit breaker events to the database for observability.
+    #[allow(clippy::too_many_arguments)]
     pub async fn log_failover_event(
         pool: &SqlitePool,
         provider: &str,

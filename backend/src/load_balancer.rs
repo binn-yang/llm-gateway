@@ -203,7 +203,7 @@ impl LoadBalancer {
                 let is_healthy = {
                     let health = self.health_state.read().await;
                     health.instances.get(&instance_name)
-                        .map_or(false, |h| h.is_healthy)
+                        .is_some_and(|h| h.is_healthy)
                 };
 
                 if is_healthy {
@@ -267,7 +267,7 @@ impl LoadBalancer {
             .filter(|inst| {
                 inst.config.enabled() &&
                 health.instances.get(inst.name.as_ref())
-                    .map_or(false, |h| {
+                    .is_some_and(|h| {
                         h.is_healthy && h.circuit_state != CircuitState::Open
                     })
             })
@@ -299,8 +299,6 @@ impl LoadBalancer {
             .sum()
     }
 
-    /// Get the count of healthy and enabled instances
-
     /// Get instance by name
     pub fn get_instance_by_name(&self, name: &str) -> Option<ProviderInstance> {
         self.instances.iter()
@@ -320,7 +318,7 @@ impl LoadBalancer {
             .filter(|inst| {
                 inst.config.enabled() &&
                 health.instances.get(inst.name.as_ref())
-                    .map_or(false, |h| h.is_healthy)
+                    .is_some_and(|h| h.is_healthy)
             })
             .count()
     }
@@ -674,7 +672,7 @@ impl LoadBalancer {
 
             // Check 4: Instance is healthy
             let is_healthy = health.instances.get(session_info.instance_name.as_str())
-                .map_or(false, |h| h.is_healthy);
+                .is_some_and(|h| h.is_healthy);
 
             if !is_healthy {
                 stats.dropped_instance_unhealthy += 1;

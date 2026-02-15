@@ -147,6 +147,7 @@ pub async fn handle_chat_completions(
     Ok(response)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_openai_request(
     state: &AppState,
     auth: &AuthInfo,
@@ -421,6 +422,7 @@ async fn handle_openai_request(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_anthropic_request(
     state: &AppState,
     auth: &AuthInfo,
@@ -666,6 +668,7 @@ async fn handle_anthropic_request(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_gemini_request(
     state: &AppState,
     auth: &AuthInfo,

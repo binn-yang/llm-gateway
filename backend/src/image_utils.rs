@@ -27,7 +27,7 @@ pub fn parse_data_url(data_url: &str) -> Result<(String, String), AppError> {
     let mime_type = header_parts[0].to_string();
 
     // Check if base64 encoded
-    let is_base64 = header_parts.iter().any(|&part| part == "base64");
+    let is_base64 = header_parts.contains(&"base64");
 
     if !is_base64 {
         return Err(AppError::ConversionError(

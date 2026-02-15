@@ -47,9 +47,10 @@ impl OAuthManager {
     }
 
     /// Get a provider by name
-    pub fn get_provider(&self, provider_name: &str) -> Result<&Box<dyn OAuthProvider>, AppError> {
+    pub fn get_provider(&self, provider_name: &str) -> Result<&dyn OAuthProvider, AppError> {
         self.providers
             .get(provider_name)
+            .map(|b| b.as_ref())
             .ok_or_else(|| AppError::OAuthError {
                 message: format!("OAuth provider '{}' not found", provider_name),
             })

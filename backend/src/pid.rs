@@ -30,6 +30,10 @@ impl PidFile {
         }
 
         // Open file with read/write access
+        // Note: We intentionally don't use .truncate(true) here because we need to
+        // read the existing PID if the lock fails (to detect stale processes).
+        // Truncation happens manually after acquiring the lock via set_len(0).
+        #[allow(clippy::suspicious_open_options)]
         let mut file = OpenOptions::new()
             .create(true)
             .read(true)

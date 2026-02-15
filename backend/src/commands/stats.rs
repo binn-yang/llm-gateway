@@ -85,7 +85,7 @@ async fn display_system_summary(cfg: &config::Config, hours: u32) -> Result<()> 
 
     // Try to connect to database for runtime statistics
     if cfg.observability.enabled {
-        match connect_to_database(&cfg).await {
+        match connect_to_database(cfg).await {
             Ok(pool) => {
                 display_database_stats(&pool, hours).await?;
             }
@@ -103,6 +103,7 @@ async fn display_system_summary(cfg: &config::Config, hours: u32) -> Result<()> 
 
 /// Provider health status row from database
 #[derive(Debug, FromRow)]
+#[allow(dead_code)]
 struct ProviderHealthRow {
     provider: String,
     instance: String,
@@ -182,20 +183,20 @@ async fn display_provider_health(cfg: &config::Config) -> Result<()> {
         let (status_symbol, status_text, details) = match event_opt {
             None => {
                 healthy_count += 1;
-                ("✅", "Healthy", format!("(0 failures)"))
+                ("✅", "Healthy", "(0 failures)".to_string())
             }
             Some(event) => {
                 match event.event_type.as_str() {
                     "circuit_closed" => {
                         healthy_count += 1;
-                        ("✅", "Healthy", format!("(0 failures)"))
+                        ("✅", "Healthy", "(0 failures)".to_string())
                     }
                     "circuit_half_open" | "recovery" => {
                         recovering_count += 1;
                         let retry_info = if let Some(retry_secs) = event.next_retry_secs {
                             format!("(testing recovery, retry in {}s)", retry_secs)
                         } else {
-                            format!("(testing recovery)")
+                            "(testing recovery)".to_string()
                         };
                         ("🟡", "Recovering", retry_info)
                     }
@@ -211,7 +212,7 @@ async fn display_provider_health(cfg: &config::Config) -> Result<()> {
                     }
                     _ => {
                         healthy_count += 1;
-                        ("✅", "Healthy", format!("(0 failures)"))
+                        ("✅", "Healthy", "(0 failures)".to_string())
                     }
                 }
             }

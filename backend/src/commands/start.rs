@@ -51,7 +51,7 @@ pub async fn execute(daemon_mode: bool, pid_file: Option<PathBuf>) -> Result<()>
         // After daemonization, we're in the child process
         // Parent has exited, and stdout/stderr are redirected to log files
     } else {
-        println!("{}", "Starting gateway in foreground mode...");
+        println!("Starting gateway in foreground mode...");
     }
 
     // Now safe to do file I/O after fork (in daemon mode) or without fork (foreground)

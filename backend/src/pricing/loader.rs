@@ -39,7 +39,7 @@ pub async fn download_pricing_from_url(url: &str) -> Result<String, AppError> {
         .get(url)
         .send()
         .await
-        .map_err(|e| AppError::HttpRequest(e))?;
+        .map_err(AppError::HttpRequest)?;
 
     if !response.status().is_success() {
         return Err(AppError::ConfigError(format!(

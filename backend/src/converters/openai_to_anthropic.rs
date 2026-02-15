@@ -119,7 +119,7 @@ pub async fn convert_request(
         stream: openai_req.stream,
         stop_sequences,
         tools: openai_req.tools.as_ref().map(|t| convert_tools(t)),
-        tool_choice: openai_req.tool_choice.as_ref().and_then(|tc| convert_tool_choice(tc)),
+        tool_choice: openai_req.tool_choice.as_ref().and_then(convert_tool_choice),
         thinking: None, // OpenAI doesn't have extended thinking
         metadata: None, // OpenAI doesn't have request metadata
     };

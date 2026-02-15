@@ -201,6 +201,7 @@ impl StreamingUsageTracker {
 }
 
 /// Wrapper for OpenAI SSE stream that extracts usage information
+#[allow(clippy::type_complexity)]
 pub fn create_openai_sse_stream_with_usage(
     response: reqwest::Response,
     request_id: String,
@@ -236,7 +237,7 @@ pub fn create_openai_sse_stream_with_usage(
                         }
 
                         // Forward the JSON data
-                        return Ok(Event::default().data(data.to_string()));
+                        return Ok(Event::default().data(data));
                     }
                 }
 
@@ -283,7 +284,7 @@ pub fn create_openai_sse_stream_with_tracker(
                             }
                         }
 
-                        return Ok(Event::default().data(data.to_string()));
+                        return Ok(Event::default().data(data));
                     }
                 }
                 Ok(Event::default().data(""))
@@ -317,7 +318,7 @@ pub fn create_openai_sse_stream(
                         }
 
                         // Forward the JSON data
-                        return Ok(Event::default().data(data.to_string()));
+                        return Ok(Event::default().data(data));
                     }
                 }
 
@@ -689,7 +690,7 @@ pub fn create_native_gemini_sse_stream_with_tracker(
                                 }
 
                                 // 透传原始数据
-                                events.push(Ok(Event::default().data(data.to_string())));
+                                events.push(Ok(Event::default().data(data)));
                             }
                         }
                     }

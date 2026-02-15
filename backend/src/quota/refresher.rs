@@ -14,11 +14,11 @@ pub struct QuotaRefresher {
 
 impl QuotaRefresher {
     pub fn new(db: QuotaDatabase, config: &Config, token_store: Arc<TokenStore>) -> Self {
-        let mut providers: Vec<Box<dyn QuotaProvider>> = vec![];
-
         // 注册支持配额查询的 provider
-        providers.push(Box::new(AnthropicOAuthQuotaProvider::new(token_store)));
         // 未来可添加: Gemini, OpenAI 等
+        let providers: Vec<Box<dyn QuotaProvider>> = vec![
+            Box::new(AnthropicOAuthQuotaProvider::new(token_store)),
+        ];
 
         let interval_seconds = config
             .observability

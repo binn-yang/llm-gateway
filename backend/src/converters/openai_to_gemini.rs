@@ -110,7 +110,7 @@ pub async fn convert_request(
         let gemini_tool_config = openai_req
             .tool_choice
             .as_ref()
-            .and_then(|tc| convert_tool_config(tc));
+            .and_then(convert_tool_config);
         (Some(vec![gemini_tools]), gemini_tool_config)
     } else {
         (None, None)

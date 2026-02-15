@@ -359,7 +359,7 @@ impl TokenStore {
             })?;
 
         Ok(format!("{}:{}", 
-            STANDARD.encode(&nonce_bytes), 
+            STANDARD.encode(nonce_bytes), 
             STANDARD.encode(&ciphertext)))
     }
 

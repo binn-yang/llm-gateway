@@ -32,7 +32,7 @@ pub async fn execute(pid_file: Option<PathBuf>, force: bool, timeout: u64) -> Re
         // Read PID from file
         let pid = PidFile::read(pid_file)?;
 
-        println!("{} {}", "Stopping gateway", format!("(PID: {})", pid));
+        println!("Stopping gateway (PID: {})", pid);
         info!("Sending SIGTERM to PID {}", pid);
 
         // Send SIGTERM for graceful shutdown
@@ -46,14 +46,14 @@ pub async fn execute(pid_file: Option<PathBuf>, force: bool, timeout: u64) -> Re
 
         while start.elapsed() < timeout_duration {
             if !is_process_running(pid) {
-                println!("{}", "  Gateway stopped successfully");
+                println!("  Gateway stopped successfully");
                 info!("Gateway stopped successfully");
                 return Ok(());
             }
             sleep(Duration::from_millis(500)).await;
 
             // Print progress dots
-            if start.elapsed().as_secs() % 5 == 0 {
+            if start.elapsed().as_secs().is_multiple_of(5) {
                 print!(".");
                 use std::io::Write;
                 std::io::stdout().flush()?;
@@ -64,14 +64,14 @@ pub async fn execute(pid_file: Option<PathBuf>, force: bool, timeout: u64) -> Re
 
         // Timeout reached
         if force {
-            println!("{}", "  Timeout reached, force killing...");
+            println!("  Timeout reached, force killing...");
             info!("Force killing PID {}", pid);
             send_signal_to_pid(pid, SignalKind::from_raw(libc::SIGKILL))?;
             sleep(Duration::from_secs(1)).await;
 
             if !is_process_running(pid) {
-                println!("{}", "  Gateway force stopped");
-                return Ok(());
+                println!("  Gateway force stopped");
+                Ok(())
             } else {
                 bail!("Failed to kill process even with SIGKILL");
             }

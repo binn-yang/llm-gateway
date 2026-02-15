@@ -77,6 +77,7 @@ impl Default for DiscoveryConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Default)]
 pub struct ProvidersConfig {
     #[serde(default)]
     pub openai: Vec<ProviderInstanceConfig>,
@@ -92,18 +93,6 @@ pub struct ProvidersConfig {
     pub custom: Vec<CustomProviderInstanceConfig>,
 }
 
-impl Default for ProvidersConfig {
-    fn default() -> Self {
-        Self {
-            openai: vec![],
-            anthropic: vec![],
-            gemini: vec![],
-            azure_openai: vec![],
-            bedrock: vec![],
-            custom: vec![],
-        }
-    }
-}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ProviderInstanceConfig {
@@ -805,7 +794,7 @@ fn validate_config(cfg: &Config) -> anyhow::Result<()> {
     }
 
     // Validate OAuth provider configurations
-    validate_oauth_providers(&cfg)?;
+    validate_oauth_providers(cfg)?;
 
     Ok(())
 }
