@@ -5,7 +5,7 @@
 // 2. 优先级选择算法性能
 // 3. 健康检查逻辑性能
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 // 占位符 - 待实现
 fn benchmark_placeholder(c: &mut Criterion) {

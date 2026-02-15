@@ -1,11 +1,11 @@
-/// 测试 Anthropic OAuth 授权 URL 生成
-///
-/// 验证:
-/// 1. 使用正确的 client_id (9d1c250a-e61b-44d9-88ed-5944d1962f5e)
-/// 2. 使用正确的 auth_url (https://claude.ai/oauth/authorize)
-/// 3. 包含 code=true 参数
-/// 4. Scopes 格式正确（空格分隔）
-/// 5. 包含 PKCE 参数
+// 测试 Anthropic OAuth 授权 URL 生成
+//
+// 验证:
+// 1. 使用正确的 client_id (9d1c250a-e61b-44d9-88ed-5944d1962f5e)
+// 2. 使用正确的 auth_url (https://claude.ai/oauth/authorize)
+// 3. 包含 code=true 参数
+// 4. Scopes 格式正确（空格分隔）
+// 5. 包含 PKCE 参数
 
 use llm_gateway::{
     config::OAuthProviderConfig,

@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone)]
 pub enum RequestResult {
     Success,
-    ClientError(u16),  // 4xx
-    ServerError(u16),  // 5xx
+    ClientError(#[allow(dead_code)] u16),  // 4xx
+    ServerError(#[allow(dead_code)] u16),  // 5xx
     NetworkError,
     Timeout,
 }
@@ -16,6 +16,7 @@ impl RequestResult {
         matches!(self, RequestResult::Success)
     }
 
+    #[allow(dead_code)]
     pub fn is_error(&self) -> bool {
         !self.is_success()
     }
@@ -26,6 +27,7 @@ impl RequestResult {
 pub struct LatencyRecord {
     pub duration: Duration,
     pub result: RequestResult,
+    #[allow(dead_code)]
     pub timestamp: Instant,
 }
 
@@ -127,6 +129,7 @@ impl StressTestMetrics {
     }
 
     /// 重置指标
+    #[allow(dead_code)]
     pub fn reset(&self) {
         self.records.lock().unwrap().clear();
     }

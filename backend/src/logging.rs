@@ -550,7 +550,7 @@ mod simple_mode_tests {
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
         // Should extract text blocks, skip image blocks
-        assert!(parsed["user_messages"].as_array().unwrap().len() >= 1);
+        assert!(!parsed["user_messages"].as_array().unwrap().is_empty());
         assert_eq!(parsed["user_messages"][0], "Hello");
     }
 
@@ -560,7 +560,7 @@ mod simple_mode_tests {
         let result = extract_simple_response_anthropic(&response);
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
 
-        assert!(parsed["assistant_response"].as_str().unwrap().len() > 0);
+        assert!(!parsed["assistant_response"].as_str().unwrap().is_empty());
         assert!(parsed.get("note").is_none()); // No note when text present
     }
 

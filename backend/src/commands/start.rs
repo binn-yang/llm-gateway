@@ -73,8 +73,6 @@ pub async fn execute(daemon_mode: bool, pid_file: Option<PathBuf>) -> Result<()>
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Note: Full integration testing of start command requires
     // actual server startup and is better suited for integration tests
     // Unit tests here would be minimal

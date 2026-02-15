@@ -95,6 +95,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[allow(dead_code)]
     fn create_test_config() -> Config {
         Config {
             server: ServerConfig {

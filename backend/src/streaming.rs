@@ -708,65 +708,6 @@ pub fn create_native_gemini_sse_stream_with_tracker(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::models::openai::{ChatCompletionChunk, ChunkChoice, Delta, Usage};
-
-    #[test]
-    fn test_extract_usage_from_chunk() {
-        let chunk = ChatCompletionChunk {
-            id: "chatcmpl-123".to_string(),
-            object: "chat.completion.chunk".to_string(),
-            created: 1677652288,
-            model: "gpt-4".to_string(),
-            choices: vec![ChunkChoice {
-                index: 0,
-                delta: Delta {
-                    role: None,
-                    content: None,
-                    tool_calls: None,
-                },
-                finish_reason: Some("stop".to_string()),
-            }],
-            usage: Some(Usage {
-                prompt_tokens: 10,
-                completion_tokens: 20,
-                total_tokens: 30,
-            }),
-        };
-
-        let json = serde_json::to_string(&chunk).unwrap();
-        let (input, output) = extract_usage_from_chunk(&json).unwrap();
-        assert_eq!(input, 10);
-        assert_eq!(output, 20);
-    }
-
-    #[test]
-    fn test_extract_usage_from_chunk_without_usage() {
-        let chunk = ChatCompletionChunk {
-            id: "chatcmpl-123".to_string(),
-            object: "chat.completion.chunk".to_string(),
-            created: 1677652288,
-            model: "gpt-4".to_string(),
-            choices: vec![ChunkChoice {
-                index: 0,
-                delta: Delta {
-                    role: Some("assistant".to_string()),
-                    content: Some("Hello".to_string()),
-                    tool_calls: None,
-                },
-                finish_reason: None,
-            }],
-            usage: None,
-        };
-
-        let json = serde_json::to_string(&chunk).unwrap();
-        let result = extract_usage_from_chunk(&json);
-        assert!(result.is_none());
-    }
-}
-
 /// 创建原生 Anthropic SSE 流（无协议转换）
 /// 直接转发 Anthropic 的 SSE 事件，保持原生格式
 pub fn create_native_anthropic_sse_stream(
@@ -970,4 +911,63 @@ pub fn create_native_anthropic_sse_stream_with_tracker(
     });
 
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::openai::{ChatCompletionChunk, ChunkChoice, Delta, Usage};
+
+    #[test]
+    fn test_extract_usage_from_chunk() {
+        let chunk = ChatCompletionChunk {
+            id: "chatcmpl-123".to_string(),
+            object: "chat.completion.chunk".to_string(),
+            created: 1677652288,
+            model: "gpt-4".to_string(),
+            choices: vec![ChunkChoice {
+                index: 0,
+                delta: Delta {
+                    role: None,
+                    content: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: Some(Usage {
+                prompt_tokens: 10,
+                completion_tokens: 20,
+                total_tokens: 30,
+            }),
+        };
+
+        let json = serde_json::to_string(&chunk).unwrap();
+        let (input, output) = extract_usage_from_chunk(&json).unwrap();
+        assert_eq!(input, 10);
+        assert_eq!(output, 20);
+    }
+
+    #[test]
+    fn test_extract_usage_from_chunk_without_usage() {
+        let chunk = ChatCompletionChunk {
+            id: "chatcmpl-123".to_string(),
+            object: "chat.completion.chunk".to_string(),
+            created: 1677652288,
+            model: "gpt-4".to_string(),
+            choices: vec![ChunkChoice {
+                index: 0,
+                delta: Delta {
+                    role: Some("assistant".to_string()),
+                    content: Some("Hello".to_string()),
+                    tool_calls: None,
+                },
+                finish_reason: None,
+            }],
+            usage: None,
+        };
+
+        let json = serde_json::to_string(&chunk).unwrap();
+        let result = extract_usage_from_chunk(&json);
+        assert!(result.is_none());
+    }
 }

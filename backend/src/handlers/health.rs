@@ -28,9 +28,6 @@ pub async fn readiness_check() -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
-    use axum::http::Request;
-    use tower::ServiceExt;
 
     #[tokio::test]
     async fn test_health_check_returns_ok() {

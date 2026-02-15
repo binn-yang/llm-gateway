@@ -181,7 +181,7 @@ async fn test_scenario_2_concurrent_throughput() {
     println!("Waiting for all requests to complete...");
     while join_set.join_next().await.is_some() {
         let progress = metrics.request_count();
-        if progress % 10000 == 0 {
+        if progress.is_multiple_of(10000) {
             println!("  Progress: {}/{}", progress, total_requests);
         }
     }
@@ -784,6 +784,7 @@ async fn test_scenario_8_memory_leak_detection() {
 // 添加更多测试助手函数
 
 /// 等待一段时间并打印进度
+#[allow(dead_code)]
 async fn wait_with_progress(duration: Duration, message: &str) {
     let steps = 10;
     let step_duration = duration / steps;
