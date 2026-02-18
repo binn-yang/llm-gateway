@@ -277,7 +277,7 @@ An instance is marked **unhealthy** on **single request failure** of these types
 |--------------|----------|--------|
 | **5xx Server Errors** | 500, 502, 503, 504 | Mark unhealthy |
 | **Connection Failures** | TCP timeout, connection refused, DNS failure | Mark unhealthy |
-| **Request Timeouts** | Exceeds `timeout_seconds` | Mark unhealthy |
+| **Request Timeouts** | Exceeds `request_timeout_seconds` | Mark unhealthy |
 | **4xx Client Errors** | 401, 403, 429 | **No action** (not instance fault) |
 | **Business Errors** | Invalid API key, rate limit | **No action** |
 

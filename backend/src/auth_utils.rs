@@ -94,7 +94,7 @@ mod tests {
         fn api_key(&self) -> Option<&str> { self.api_key.as_deref() }
         fn oauth_provider(&self) -> Option<&str> { None }
         fn base_url(&self) -> &str { "https://api.test.com" }
-        fn timeout_seconds(&self) -> u64 { 30 }
+        fn request_timeout_seconds(&self) -> u64 { 30 }
         fn priority(&self) -> u32 { 1 }
         fn failure_timeout_seconds(&self) -> u64 { 60 }
         fn weight(&self) -> u32 { 100 }

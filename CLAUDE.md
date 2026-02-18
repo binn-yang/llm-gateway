@@ -102,7 +102,7 @@ pub trait ProviderConfig: Send + Sync + Debug + 'static {
     fn api_key(&self) -> Option<&str>;
     fn oauth_provider(&self) -> Option<&str>;
     fn base_url(&self) -> &str;
-    fn timeout_seconds(&self) -> u64;
+    fn request_timeout_seconds(&self) -> u64;
     fn priority(&self) -> u32;
     fn failure_timeout_seconds(&self) -> u64;
     fn weight(&self) -> u32;
@@ -379,7 +379,7 @@ priority = 1
 enabled = true
 api_key = "sk-ant-..."
 base_url = "https://api.anthropic.com/v1"
-timeout_seconds = 300
+request_timeout_seconds = 300
 failure_timeout_seconds = 60
 
 # 备份实例(仅在主实例失败时使用)
@@ -398,7 +398,7 @@ api_key = "your-azure-api-key"
 resource_name = "my-openai-resource"
 api_version = "2024-02-01"
 # deployment_name = "gpt-4"  # 可选,默认用模型名
-timeout_seconds = 300
+request_timeout_seconds = 300
 priority = 1
 
 # 模型到 deployment 映射(可选)
@@ -416,7 +416,7 @@ region = "us-east-1"
 access_key_id = "AKIA..."
 secret_access_key = "..."
 # session_token = "..."  # 可选,用于临时凭证
-timeout_seconds = 300
+request_timeout_seconds = 300
 priority = 1
 
 # 模型 ID 映射(可选,友好名 → Bedrock model ID)
@@ -433,7 +433,7 @@ enabled = true
 provider_id = "deepseek"          # registry 中注册为 "custom:deepseek"
 api_key = "sk-..."
 base_url = "https://api.deepseek.com/v1"
-timeout_seconds = 300
+request_timeout_seconds = 300
 priority = 1
 
 # 自定义请求 headers(可选)

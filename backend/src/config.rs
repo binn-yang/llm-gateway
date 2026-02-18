@@ -112,7 +112,8 @@ pub struct ProviderInstanceConfig {
     pub oauth_provider: Option<String>,
 
     pub base_url: String,
-    pub timeout_seconds: u64,
+    #[serde(alias = "timeout_seconds", default = "default_timeout")]
+    pub request_timeout_seconds: u64,
 
     #[serde(default = "default_priority")]
     pub priority: u32,
@@ -144,7 +145,8 @@ pub struct AnthropicInstanceConfig {
     pub oauth_provider: Option<String>,
 
     pub base_url: String,
-    pub timeout_seconds: u64,
+    #[serde(alias = "timeout_seconds", default = "default_timeout")]
+    pub request_timeout_seconds: u64,
     pub api_version: String,
 
     #[serde(default = "default_priority")]
@@ -192,8 +194,8 @@ pub struct AzureOpenAIInstanceConfig {
     #[serde(default)]
     pub model_deployments: HashMap<String, String>,
 
-    #[serde(default = "default_timeout")]
-    pub timeout_seconds: u64,
+    #[serde(alias = "timeout_seconds", default = "default_timeout")]
+    pub request_timeout_seconds: u64,
 
     #[serde(default = "default_priority")]
     pub priority: u32,
@@ -229,8 +231,8 @@ pub struct BedrockInstanceConfig {
     #[serde(default)]
     pub model_id_mapping: HashMap<String, String>,
 
-    #[serde(default = "default_timeout")]
-    pub timeout_seconds: u64,
+    #[serde(alias = "timeout_seconds", default = "default_timeout")]
+    pub request_timeout_seconds: u64,
 
     #[serde(default = "default_priority")]
     pub priority: u32,
@@ -267,8 +269,8 @@ pub struct CustomProviderInstanceConfig {
     #[serde(default)]
     pub custom_headers: HashMap<String, String>,
 
-    #[serde(default = "default_timeout")]
-    pub timeout_seconds: u64,
+    #[serde(alias = "timeout_seconds", default = "default_timeout")]
+    pub request_timeout_seconds: u64,
 
     #[serde(default = "default_priority")]
     pub priority: u32,
@@ -1027,7 +1029,7 @@ mod tests {
             api_key: Some("sk-test2".to_string()),
             oauth_provider: None,
             base_url: "https://api.openai.com/v1".to_string(),
-            timeout_seconds: 300,
+            request_timeout_seconds: 300,
             priority: 2,
             failure_timeout_seconds: 60,
             weight: 100,
@@ -1072,7 +1074,7 @@ mod tests {
                     api_key: Some("sk-test".to_string()),
                     oauth_provider: None,
                     base_url: "https://api.openai.com/v1".to_string(),
-                    timeout_seconds: 300,
+                    request_timeout_seconds: 300,
                     priority: 1,
                     failure_timeout_seconds: 60,
                     weight: 100,
@@ -1084,7 +1086,7 @@ mod tests {
                     api_key: Some("sk-ant-test".to_string()),
                     oauth_provider: None,
                     base_url: "https://api.anthropic.com/v1".to_string(),
-                    timeout_seconds: 300,
+                    request_timeout_seconds: 300,
                     api_version: "2023-06-01".to_string(),
                     priority: 1,
                     failure_timeout_seconds: 60,

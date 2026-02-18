@@ -126,7 +126,7 @@ name = "openai-primary"
 enabled = true
 api_key = "sk-your-openai-key"
 base_url = "https://api.openai.com/v1"
-timeout_seconds = 300
+request_timeout_seconds = 300
 priority = 1
 # weight = 100              # Weighted random among same priority (default: 100)
 
@@ -135,7 +135,7 @@ name = "anthropic-primary"
 enabled = true
 api_key = "sk-ant-your-key"
 base_url = "https://api.anthropic.com/v1"
-timeout_seconds = 300
+request_timeout_seconds = 300
 api_version = "2023-06-01"
 priority = 1
 
@@ -144,7 +144,7 @@ name = "gemini-primary"
 enabled = true
 api_key = "your-gemini-key"
 base_url = "https://generativelanguage.googleapis.com/v1beta"
-timeout_seconds = 300
+request_timeout_seconds = 300
 priority = 1
 
 # Azure OpenAI (path-routed via /azure/v1/chat/completions)
@@ -154,7 +154,7 @@ enabled = true
 api_key = "your-azure-key"
 resource_name = "my-openai-resource"
 api_version = "2024-02-01"
-timeout_seconds = 300
+request_timeout_seconds = 300
 priority = 1
 
 [providers.azure_openai.model_deployments]
@@ -167,7 +167,7 @@ enabled = true
 region = "us-east-1"
 access_key_id = "AKIA..."
 secret_access_key = "..."
-timeout_seconds = 300
+request_timeout_seconds = 300
 priority = 1
 
 [providers.bedrock.model_id_mapping]
@@ -180,7 +180,7 @@ enabled = true
 provider_id = "deepseek"
 api_key = "sk-..."
 base_url = "https://api.deepseek.com/v1"
-timeout_seconds = 300
+request_timeout_seconds = 300
 priority = 1
 ```
 
@@ -665,7 +665,7 @@ enabled = true
 auth_mode = "oauth"
 oauth_provider = "anthropic"
 base_url = "https://api.anthropic.com/v1"
-timeout_seconds = 300
+request_timeout_seconds = 300
 api_version = "2023-06-01"
 
 # Provider instance using API Key (no quota monitoring)
@@ -675,7 +675,7 @@ enabled = true
 auth_mode = "bearer"
 api_key = "sk-ant-your-key"
 base_url = "https://api.anthropic.com/v1"
-timeout_seconds = 300
+request_timeout_seconds = 300
 api_version = "2023-06-01"
 ```
 

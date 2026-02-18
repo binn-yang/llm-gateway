@@ -14,7 +14,7 @@ mod tests {
             api_key: Some("sk-ant-test-key".to_string()),
             oauth_provider: None,
             base_url: "https://api.anthropic.com/v1".to_string(),
-            timeout_seconds: 30,
+            request_timeout_seconds: 30,
             api_version: "2023-06-01".to_string(),
             priority: 1,
             failure_timeout_seconds: 60,

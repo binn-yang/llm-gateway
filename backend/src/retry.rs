@@ -187,7 +187,7 @@ where
         let instance_name = instance.name.to_string();
 
         // Get timeout from instance configuration
-        let timeout_duration = Duration::from_secs(instance.config.timeout_seconds());
+        let timeout_duration = Duration::from_secs(instance.config.request_timeout_seconds());
 
         // Execute the request with timeout
         let request_result = timeout(

@@ -35,7 +35,7 @@ impl LlmProvider for OpenAIResponsesProvider {
         let mut req = client
             .post(&url)
             .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_secs(config.timeout_seconds()));
+            .timeout(std::time::Duration::from_secs(config.request_timeout_seconds()));
 
         if let Some(token) = &request.oauth_token {
             req = req.header("Authorization", format!("Bearer {}", token));

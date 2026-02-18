@@ -51,7 +51,7 @@ impl LlmProvider for AzureOpenAIProvider {
         let req = client
             .post(&url)
             .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_secs(config.timeout_seconds()));
+            .timeout(std::time::Duration::from_secs(config.request_timeout_seconds()));
 
         // Azure uses api-key header for API key, Bearer for OAuth
         let auth_style = if request.oauth_token.is_some() {

@@ -25,7 +25,7 @@ pub async fn count_tokens(
     let mut builder = client
         .post(&url)
         .header("Content-Type", "application/json")
-        .timeout(Duration::from_secs(config.timeout_seconds));
+        .timeout(Duration::from_secs(config.request_timeout_seconds));
 
     if let Some(token) = oauth_token {
         builder = builder.header("Authorization", format!("Bearer {}", token));
@@ -64,7 +64,7 @@ pub async fn list_models(
 
     let mut builder = client
         .get(&url)
-        .timeout(Duration::from_secs(config.timeout_seconds));
+        .timeout(Duration::from_secs(config.request_timeout_seconds));
 
     if let Some(token) = oauth_token {
         builder = builder.header("Authorization", format!("Bearer {}", token));
@@ -104,7 +104,7 @@ pub async fn get_model(
 
     let mut builder = client
         .get(&url)
-        .timeout(Duration::from_secs(config.timeout_seconds));
+        .timeout(Duration::from_secs(config.request_timeout_seconds));
 
     if let Some(token) = oauth_token {
         builder = builder.header("Authorization", format!("Bearer {}", token));
@@ -144,7 +144,7 @@ mod tests {
             enabled: true,
             api_key: Some("test-key".to_string()),
             base_url: "https://generativelanguage.googleapis.com/v1beta".to_string(),
-            timeout_seconds: 30,
+            request_timeout_seconds: 30,
             priority: 1,
             failure_timeout_seconds: 60,
             weight: 100,

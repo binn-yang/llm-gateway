@@ -39,7 +39,7 @@ impl LlmProvider for CustomOpenAIProvider {
         let mut req = client
             .post(&url)
             .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_secs(config.timeout_seconds()));
+            .timeout(std::time::Duration::from_secs(config.request_timeout_seconds()));
 
         // Apply custom headers before auth (auth headers take precedence)
         if let Some(cfg) = custom_config {

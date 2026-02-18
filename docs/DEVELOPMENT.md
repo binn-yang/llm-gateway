@@ -121,7 +121,7 @@ An instance is marked **unhealthy** based on intelligent error classification:
 | **Transient Errors** | 503 Service Unavailable | **No marking** | Immediate retry on different instance |
 | **Server Errors** | 500, 502, 504 | Mark unhealthy | Circuit breaker + failover |
 | **Connection Failures** | TCP timeout, DNS failure | Mark unhealthy | Circuit breaker + failover |
-| **Request Timeouts** | Exceeds timeout_seconds | Mark unhealthy | Circuit breaker + failover |
+| **Request Timeouts** | Exceeds request_timeout_seconds | Mark unhealthy | Circuit breaker + failover |
 | **Business Errors** | Invalid model, bad request | **No action** | Return to client |
 
 #### Circuit Breaker Pattern

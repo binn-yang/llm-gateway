@@ -60,10 +60,10 @@ enabled = true
 auth_mode = "bearer"          # Authentication mode: "bearer" or "oauth"
 api_key = "sk-YOUR-OPENAI-KEY-HERE"
 base_url = "https://api.openai.com/v1"
-timeout_seconds = 300
+request_timeout_seconds = 300
 priority = 1                  # Primary instance
+weight = 100                  # Weighted random selection among same priority (default: 100)
 failure_timeout_seconds = 60  # Auto-recover after 60 seconds of last failure
-# weight = 100               # Weighted random selection among same priority (default: 100)
 
 # Example: OpenAI instance with OAuth authentication
 # [[providers.openai]]
@@ -72,7 +72,7 @@ failure_timeout_seconds = 60  # Auto-recover after 60 seconds of last failure
 # auth_mode = "oauth"          # Use OAuth authentication
 # oauth_provider = "openai"    # Reference to oauth_providers configuration
 # base_url = "https://api.openai.com/v1"
-# timeout_seconds = 300
+# request_timeout_seconds = 300
 # priority = 2                 # Backup instance
 # failure_timeout_seconds = 60
 
@@ -83,7 +83,7 @@ enabled = true
 auth_mode = "bearer"          # Authentication mode: "bearer" or "oauth"
 api_key = "sk-ant-YOUR-KEY-HERE"
 base_url = "https://api.anthropic.com/v1"
-timeout_seconds = 300
+request_timeout_seconds = 300
 api_version = "2023-06-01"
 priority = 1                  # Primary instance
 failure_timeout_seconds = 60
@@ -101,7 +101,7 @@ auto_cache_tools = true       # Automatically cache tool definitions
 # auth_mode = "oauth"          # Use OAuth authentication
 # oauth_provider = "anthropic" # Reference to oauth_providers configuration
 # base_url = "https://api.anthropic.com/v1"
-# timeout_seconds = 300
+# request_timeout_seconds = 300
 # api_version = "2023-06-01"
 # priority = 2                 # Backup instance
 # failure_timeout_seconds = 60
@@ -113,7 +113,7 @@ auto_cache_tools = true       # Automatically cache tool definitions
 # auth_mode = "bearer"
 # api_key = "YOUR-GEMINI-KEY-HERE"
 # base_url = "https://generativelanguage.googleapis.com/v1beta"
-# timeout_seconds = 300
+# request_timeout_seconds = 300
 # priority = 1
 # failure_timeout_seconds = 60
 
@@ -191,7 +191,7 @@ auto_cache_tools = true       # Automatically cache tool definitions
 # auth_mode = "oauth"          # 使用 OAuth 认证
 # oauth_provider = "gemini-cli"  # 引用 oauth_providers 配置
 # base_url = "https://generativelanguage.googleapis.com/v1beta"
-# timeout_seconds = 300
+# request_timeout_seconds = 300
 # priority = 1
 # failure_timeout_seconds = 60
 

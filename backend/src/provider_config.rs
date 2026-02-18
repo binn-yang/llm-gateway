@@ -13,7 +13,7 @@ pub trait ProviderConfig: Send + Sync + Debug + 'static {
     fn api_key(&self) -> Option<&str>;
     fn oauth_provider(&self) -> Option<&str>;
     fn base_url(&self) -> &str;
-    fn timeout_seconds(&self) -> u64;
+    fn request_timeout_seconds(&self) -> u64;
     fn priority(&self) -> u32;
     fn failure_timeout_seconds(&self) -> u64;
     fn weight(&self) -> u32;
@@ -48,7 +48,7 @@ macro_rules! impl_provider_config {
             fn api_key(&self) -> Option<&str> { self.api_key.as_deref() }
             fn oauth_provider(&self) -> Option<&str> { self.oauth_provider.as_deref() }
             fn base_url(&self) -> &str { &self.base_url }
-            fn timeout_seconds(&self) -> u64 { self.timeout_seconds }
+            fn request_timeout_seconds(&self) -> u64 { self.request_timeout_seconds }
             fn priority(&self) -> u32 { self.priority }
             fn failure_timeout_seconds(&self) -> u64 { self.failure_timeout_seconds }
             fn weight(&self) -> u32 { self.weight }
@@ -65,7 +65,7 @@ macro_rules! impl_provider_config {
             fn api_key(&self) -> Option<&str> { self.api_key.as_deref() }
             fn oauth_provider(&self) -> Option<&str> { self.oauth_provider.as_deref() }
             fn base_url(&self) -> &str { $base_url }
-            fn timeout_seconds(&self) -> u64 { self.timeout_seconds }
+            fn request_timeout_seconds(&self) -> u64 { self.request_timeout_seconds }
             fn priority(&self) -> u32 { self.priority }
             fn failure_timeout_seconds(&self) -> u64 { self.failure_timeout_seconds }
             fn weight(&self) -> u32 { self.weight }
@@ -82,7 +82,7 @@ macro_rules! impl_provider_config {
             fn api_key(&self) -> Option<&str> { $api_key }
             fn oauth_provider(&self) -> Option<&str> { None }
             fn base_url(&self) -> &str { $base_url }
-            fn timeout_seconds(&self) -> u64 { self.timeout_seconds }
+            fn request_timeout_seconds(&self) -> u64 { self.request_timeout_seconds }
             fn priority(&self) -> u32 { self.priority }
             fn failure_timeout_seconds(&self) -> u64 { self.failure_timeout_seconds }
             fn weight(&self) -> u32 { self.weight }

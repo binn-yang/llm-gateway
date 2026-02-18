@@ -94,7 +94,7 @@ impl LlmProvider for BedrockProvider {
         // Build reqwest request with signed headers
         let mut req = client
             .post(url_str)
-            .timeout(std::time::Duration::from_secs(config.timeout_seconds()));
+            .timeout(std::time::Duration::from_secs(config.request_timeout_seconds()));
 
         for (key, value) in &signed_headers {
             req = req.header(key.as_str(), value.as_str());

@@ -12,7 +12,7 @@ mod tests {
             enabled: true,
             api_key: Some("sk-test-key".to_string()),
             base_url: "https://api.openai.com/v1".to_string(),
-            timeout_seconds: 30,
+            request_timeout_seconds: 30,
             priority: 1,
             failure_timeout_seconds: 60,
             weight: 100,

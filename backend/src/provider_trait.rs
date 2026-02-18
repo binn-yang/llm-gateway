@@ -96,7 +96,7 @@ impl LlmProvider for OpenAIProvider {
         let req = client
             .post(&url)
             .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_secs(config.timeout_seconds()));
+            .timeout(std::time::Duration::from_secs(config.request_timeout_seconds()));
 
         let req = apply_auth(req, config, request.oauth_token.as_deref(), AuthStyle::Bearer)?;
 
@@ -137,7 +137,7 @@ impl LlmProvider for AnthropicProvider {
             .post(&url)
             .header("anthropic-version", api_version)
             .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_secs(config.timeout_seconds()));
+            .timeout(std::time::Duration::from_secs(config.request_timeout_seconds()));
 
         // Anthropic uses x-api-key header for API key, Bearer for OAuth
         let auth_style = if request.oauth_token.is_some() {
@@ -186,7 +186,7 @@ impl LlmProvider for GeminiProvider {
         let builder = client
             .post(&url)
             .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_secs(config.timeout_seconds()));
+            .timeout(std::time::Duration::from_secs(config.request_timeout_seconds()));
 
         // Gemini uses query param for API key, Bearer for OAuth
         let auth_style = if request.oauth_token.is_some() {
