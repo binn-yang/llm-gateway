@@ -47,7 +47,7 @@ providers_with_listing = ["openai"]  # Providers that support model listing API
 # ============================================================================
 # Each provider can have multiple instances for load balancing and failover
 # Instances are selected based on priority (lower number = higher priority)
-# Within the same priority level, instances are randomly selected
+# Within the same priority level, instances are selected by weighted random (weight, default: 100)
 #
 # Authentication Modes:
 #   - Bearer mode (default): Use api_key for authentication
@@ -63,6 +63,7 @@ base_url = "https://api.openai.com/v1"
 timeout_seconds = 300
 priority = 1                  # Primary instance
 failure_timeout_seconds = 60  # Auto-recover after 60 seconds of last failure
+# weight = 100               # Weighted random selection among same priority (default: 100)
 
 # Example: OpenAI instance with OAuth authentication
 # [[providers.openai]]

@@ -26,7 +26,7 @@ A high-performance LLM proxy gateway written in Rust that provides multiple API 
 - **Dual Routing Modes**:
   - **Prefix routing**: ModelRouter matches model name prefix to provider (e.g. `"gpt-"` → OpenAI)
   - **Path routing**: URL determines provider directly (e.g. `/azure/v1/chat/completions` → Azure OpenAI)
-- **Multi-Instance Load Balancing**: Each provider supports multiple backend instances with priority-based selection
+- **Multi-Instance Load Balancing**: Each provider supports multiple backend instances with priority-based selection and weighted random distribution among same-priority instances
 - **Sticky Sessions**: API key-level session affinity maximizes provider-side KV cache hits
 - **Advanced Failover System**:
   - **Circuit Breaker**: 3 failures trigger circuit open, half-open state for testing recovery
@@ -128,6 +128,7 @@ api_key = "sk-your-openai-key"
 base_url = "https://api.openai.com/v1"
 timeout_seconds = 300
 priority = 1
+# weight = 100              # Weighted random among same priority (default: 100)
 
 [[providers.anthropic]]
 name = "anthropic-primary"
