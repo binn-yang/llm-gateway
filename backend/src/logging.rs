@@ -3,9 +3,15 @@
 //! 提供敏感信息脱敏功能，确保日志中不会泄露 API keys 等敏感信息。
 
 use regex::Regex;
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::{LazyLock, RwLock};
 
-use crate::config::RedactPattern;
+use crate::config::{BodyLoggingConfig, RedactPattern};
+
+/// Global cache for compiled regex patterns, keyed by pattern string.
+static REGEX_CACHE: LazyLock<RwLock<HashMap<String, Regex>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// 脱敏后的 API key 表示
 ///
@@ -138,6 +144,26 @@ mod tests {
     }
 }
 
+/// Look up or compile a regex from the global cache.
+fn get_or_compile_regex(pattern: &str) -> Option<Regex> {
+    // Fast path: read lock
+    if let Ok(cache) = REGEX_CACHE.read() {
+        if let Some(regex) = cache.get(pattern) {
+            return Some(regex.clone());
+        }
+    }
+    // Slow path: compile and insert
+    match Regex::new(pattern) {
+        Ok(regex) => {
+            if let Ok(mut cache) = REGEX_CACHE.write() {
+                cache.insert(pattern.to_string(), regex.clone());
+            }
+            Some(regex)
+        }
+        Err(_) => None,
+    }
+}
+
 /// Redact sensitive data in body content using configured patterns
 ///
 /// # Arguments
@@ -150,8 +176,7 @@ pub fn redact_sensitive_data(body: &str, patterns: &[RedactPattern]) -> String {
     let mut redacted = body.to_string();
 
     for pattern in patterns {
-        // Compile regex on-the-fly (consider caching in production)
-        if let Ok(regex) = Regex::new(&pattern.pattern) {
+        if let Some(regex) = get_or_compile_regex(&pattern.pattern) {
             redacted = regex.replace_all(&redacted, &pattern.replacement).to_string();
         }
     }
@@ -159,7 +184,7 @@ pub fn redact_sensitive_data(body: &str, patterns: &[RedactPattern]) -> String {
     redacted
 }
 
-/// Truncate body content if it exceeds max size
+/// Truncate body content if it exceeds max size (UTF-8 safe)
 ///
 /// # Arguments
 /// * `body` - The body content to truncate
@@ -169,10 +194,60 @@ pub fn redact_sensitive_data(body: &str, patterns: &[RedactPattern]) -> String {
 /// Tuple of (truncated_body, was_truncated)
 pub fn truncate_body(body: String, max_size: usize) -> (String, bool) {
     if body.len() > max_size {
-        (body[..max_size].to_string(), true)
+        let at = body.floor_char_boundary(max_size);
+        (body[..at].to_string(), true)
     } else {
         (body, false)
     }
+}
+
+/// Log a body string (already serialized) through the unified pipeline.
+///
+/// Pipeline: enabled check → redact → truncate → tracing::info!
+pub fn log_body(
+    config: &BodyLoggingConfig,
+    span: &tracing::Span,
+    event_type: &str,
+    body_str: &str,
+    streaming: bool,
+    chunks_count: usize,
+) {
+    if !config.enabled {
+        return;
+    }
+
+    let redacted = redact_sensitive_data(body_str, &config.redact_patterns);
+    let (body_content, truncated) = truncate_body(redacted, config.max_body_size);
+
+    tracing::info!(
+        parent: span,
+        event_type = event_type,
+        body = %body_content,
+        body_size = body_content.len(),
+        truncated = truncated,
+        streaming = streaming,
+        chunks_count = chunks_count,
+        "Body logged"
+    );
+}
+
+/// Serialize a value to JSON and log it through the unified pipeline.
+///
+/// Pipeline: enabled check → serialize → redact → truncate → tracing::info!
+pub fn log_body_json<T: serde::Serialize>(
+    config: &BodyLoggingConfig,
+    span: &tracing::Span,
+    event_type: &str,
+    value: &T,
+    streaming: bool,
+    chunks_count: usize,
+) {
+    if !config.enabled {
+        return;
+    }
+
+    let body_str = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string());
+    log_body(config, span, event_type, &body_str, streaming, chunks_count);
 }
 
 #[cfg(test)]
@@ -202,6 +277,26 @@ mod body_logging_tests {
     }
 
     #[test]
+    fn test_redact_uses_cache() {
+        let patterns = vec![RedactPattern {
+            pattern: r"secret-\d+".to_string(),
+            replacement: "***".to_string(),
+        }];
+
+        // First call compiles and caches
+        let result1 = redact_sensitive_data("secret-123", &patterns);
+        assert_eq!(result1, "***");
+
+        // Second call hits cache
+        let result2 = redact_sensitive_data("secret-456", &patterns);
+        assert_eq!(result2, "***");
+
+        // Verify it's in the cache
+        let cache = REGEX_CACHE.read().unwrap();
+        assert!(cache.contains_key(r"secret-\d+"));
+    }
+
+    #[test]
     fn test_truncate_body() {
         let body = "a".repeat(1000);
 
@@ -213,6 +308,23 @@ mod body_logging_tests {
         // Truncation
         let (result, truncated) = truncate_body(body, 500);
         assert_eq!(result.len(), 500);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn test_truncate_body_utf8_safe() {
+        // "你好世界" = 12 bytes (3 bytes per char)
+        let body = "你好世界".to_string();
+        assert_eq!(body.len(), 12);
+
+        // Truncate at 7 bytes: should snap back to 6 (2 full chars "你好")
+        let (result, truncated) = truncate_body(body.clone(), 7);
+        assert_eq!(result, "你好");
+        assert!(truncated);
+
+        // Truncate at 4 bytes: should snap back to 3 (1 full char "你")
+        let (result, truncated) = truncate_body(body, 4);
+        assert_eq!(result, "你");
         assert!(truncated);
     }
 }

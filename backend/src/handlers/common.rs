@@ -48,6 +48,25 @@ pub async fn handle_path_routed_request(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    // Create span for body logging context
+    let span = tracing::info_span!(
+        "path_routed_request",
+        provider = %config.registry_key,
+        api_key_name = %auth.api_key_name,
+        model = %model,
+    );
+
+    // Log request body
+    let app_config = state.config.load();
+    crate::logging::log_body_json(
+        &app_config.observability.body_logging,
+        &span,
+        "request_body",
+        &body,
+        false,
+        0,
+    );
+
     // Look up provider in registry
     let registry = state.registry.load();
     let registered = registry
@@ -110,7 +129,7 @@ pub async fn handle_path_routed_request(
     // Handle response based on format and streaming
     match (config.streaming_format, is_stream) {
         (ResponseFormat::OpenAISSE, true) => {
-            // OpenAI-style SSE streaming
+            // OpenAI-style SSE streaming (body logging deferred to future StreamingTokenTracker support)
             let sse_stream = crate::streaming::create_openai_sse_stream(response);
             Ok(sse_stream.into_response())
         }
@@ -119,6 +138,19 @@ pub async fn handle_path_routed_request(
             let status = response.status();
             let headers = response.headers().clone();
             let body_bytes = response.bytes().await?;
+
+            // Log response body
+            if let Ok(response_str) = std::str::from_utf8(&body_bytes) {
+                crate::logging::log_body(
+                    &app_config.observability.body_logging,
+                    &span,
+                    "response_body",
+                    response_str,
+                    false,
+                    0,
+                );
+            }
+
             let mut resp = (status, body_bytes).into_response();
             for (key, value) in headers.iter() {
                 if key == "content-type" {

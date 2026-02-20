@@ -115,26 +115,14 @@ pub async fn handle_generate_content_any(
 
     // 记录请求体（如果启用）
     let config = state.config.load();
-    if config.observability.body_logging.enabled {
-        let request_body = serde_json::to_string(&raw_request)
-                .unwrap_or_else(|_| "{}".to_string());
-            let redacted_body = crate::logging::redact_sensitive_data(
-                &request_body,
-                &config.observability.body_logging.redact_patterns
-            );
-            let (body_content, _) = crate::logging::truncate_body(
-                redacted_body,
-                config.observability.body_logging.max_body_size
-            );
-
-        tracing::info!(
-            parent: &span,
-            event_type = "request_body",
-            body = %body_content,
-            body_size = body_content.len(),
-            "Request body"
-        );
-    }
+    crate::logging::log_body_json(
+        &config.observability.body_logging,
+        &span,
+        "request_body",
+        &raw_request,
+        false,
+        0,
+    );
 
     // 获取 Gemini LoadBalancer 和 Provider
     let registry = state.registry.load();
@@ -190,28 +178,14 @@ pub async fn handle_generate_content_any(
     let body: GenerateContentResponse = response.json().await?;
 
     // 记录响应体（如果启用）
-    if config.observability.body_logging.enabled {
-        let response_body = serde_json::to_string(&body)
-                .unwrap_or_else(|_| "{}".to_string());
-            let redacted_response = crate::logging::redact_sensitive_data(
-                &response_body,
-                &config.observability.body_logging.redact_patterns
-            );
-            let (body_content, _) = crate::logging::truncate_body(
-                redacted_response,
-                config.observability.body_logging.max_body_size
-            );
-
-        tracing::info!(
-            parent: &span,
-            event_type = "response_body",
-            body = %body_content,
-            body_size = body_content.len(),
-            streaming = false,
-            chunks_count = 0,
-            "Response body"
-        );
-    }
+    crate::logging::log_body_json(
+        &config.observability.body_logging,
+        &span,
+        "response_body",
+        &body,
+        false,
+        0,
+    );
 
     // 提取 token 使用量
     let (input_tokens, output_tokens) = if let Some(ref usage) = body.usage_metadata {
@@ -342,26 +316,14 @@ pub async fn handle_stream_generate_content_any(
 
     // 记录请求体（如果启用）
     let config = state.config.load();
-    if config.observability.body_logging.enabled {
-        let request_body = serde_json::to_string(&raw_request)
-                .unwrap_or_else(|_| "{}".to_string());
-            let redacted_body = crate::logging::redact_sensitive_data(
-                &request_body,
-                &config.observability.body_logging.redact_patterns
-            );
-            let (body_content, _) = crate::logging::truncate_body(
-                redacted_body,
-                config.observability.body_logging.max_body_size
-            );
-
-        tracing::info!(
-            parent: &span,
-            event_type = "request_body",
-            body = %body_content,
-            body_size = body_content.len(),
-            "Request body"
-        );
-    }
+    crate::logging::log_body_json(
+        &config.observability.body_logging,
+        &span,
+        "request_body",
+        &raw_request,
+        false,
+        0,
+    );
 
     // 获取 Gemini LoadBalancer 和 Provider
     let registry = state.registry.load();
@@ -477,28 +439,14 @@ pub async fn handle_stream_generate_content_any(
                 ).await;
 
                 // 记录响应体
-                if config.observability.body_logging.enabled {
-                    let accumulated_response = tracker_clone.get_accumulated_response();
-
-                    let redacted = crate::logging::redact_sensitive_data(
-                            &accumulated_response,
-                            &config.observability.body_logging.redact_patterns
-                        );
-                        let (body_content, _) = crate::logging::truncate_body(
-                            redacted,
-                            config.observability.body_logging.max_body_size
-                        );
-
-                    tracing::info!(
-                        parent: &span_clone,
-                        event_type = "response_body",
-                        body = %body_content,
-                        body_size = body_content.len(),
-                        streaming = true,
-                        chunks_count = tracker_clone.chunks_count(),
-                        "Response body"
-                    );
-                }
+                crate::logging::log_body(
+                    &config.observability.body_logging,
+                    &span_clone,
+                    "response_body",
+                    &tracker_clone.get_accumulated_response(),
+                    true,
+                    tracker_clone.chunks_count(),
+                );
             } else {
                 tracing::warn!(
                     request_id = %request_id_owned,

@@ -503,10 +503,6 @@ pub struct BodyLoggingConfig {
     #[serde(default = "default_max_body_size")]
     pub max_body_size: usize,
 
-    /// Log level for body content (default: "info")
-    #[serde(default = "default_body_log_level")]
-    pub log_level: String,
-
     /// Redaction patterns for sensitive data
     #[serde(default)]
     pub redact_patterns: Vec<RedactPattern>,
@@ -518,7 +514,6 @@ impl Default for BodyLoggingConfig {
         Self {
             enabled: default_body_logging_enabled(),
             max_body_size: default_max_body_size(),
-            log_level: default_body_log_level(),
             redact_patterns: default_redact_patterns(),
         }
     }
@@ -611,10 +606,6 @@ fn default_body_logging_enabled() -> bool {
 
 fn default_max_body_size() -> usize {
     102400 // 100KB
-}
-
-fn default_body_log_level() -> String {
-    "info".to_string()
 }
 
 fn default_redact_patterns() -> Vec<RedactPattern> {
