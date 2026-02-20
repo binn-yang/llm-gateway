@@ -207,8 +207,6 @@ auto_cache_tools = true       # Automatically cache tool definitions
 # Observability Configuration
 # ============================================================================
 [observability]
-enabled = true  # Enable SQLite-based observability
-database_path = "./data/observability.db"
 
 # Performance tuning
 [observability.performance]

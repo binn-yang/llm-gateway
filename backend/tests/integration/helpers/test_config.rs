@@ -97,8 +97,6 @@ pub fn create_stress_test_config(
         },
         oauth_providers: vec![],
         observability: ObservabilityConfig {
-            enabled: false, // 压力测试时禁用观测
-            database_path: ":memory:".to_string(),
             performance: ObservabilityPerformanceConfig {
                 batch_size: 100,
                 flush_interval_ms: 100,
@@ -205,8 +203,6 @@ pub fn create_weighted_instance_config(mock_url: &str) -> Config {
         },
         oauth_providers: vec![],
         observability: ObservabilityConfig {
-            enabled: false,
-            database_path: ":memory:".to_string(),
             performance: ObservabilityPerformanceConfig {
                 batch_size: 100,
                 flush_interval_ms: 100,
@@ -291,8 +287,6 @@ pub fn create_failover_config(primary_url: &str, backup_url: &str) -> Config {
         },
         oauth_providers: vec![],
         observability: ObservabilityConfig {
-            enabled: false,
-            database_path: ":memory:".to_string(),
             performance: ObservabilityPerformanceConfig {
                 batch_size: 100,
                 flush_interval_ms: 100,

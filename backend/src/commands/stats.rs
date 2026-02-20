@@ -49,10 +49,10 @@ pub async fn execute(hours: u32, detailed: bool) -> Result<()> {
     display_provider_health(&cfg).await?;
 
     // Display token usage statistics
-    display_token_usage(&cfg, hours, detailed).await?;
+    display_token_usage(hours, detailed).await?;
 
     // Display quota status
-    display_quota_status(&cfg).await?;
+    display_quota_status().await?;
 
     Ok(())
 }
@@ -84,17 +84,13 @@ async fn display_system_summary(cfg: &config::Config, hours: u32) -> Result<()> 
     );
 
     // Try to connect to database for runtime statistics
-    if cfg.observability.enabled {
-        match connect_to_database(cfg).await {
-            Ok(pool) => {
-                display_database_stats(&pool, hours).await?;
-            }
-            Err(e) => {
-                println!("  Database:          Not available ({})", e);
-            }
+    match connect_to_database().await {
+        Ok(pool) => {
+            display_database_stats(&pool, hours).await?;
         }
-    } else {
-        println!("  Observability:     Disabled");
+        Err(e) => {
+            println!("  Database:          Not available ({})", e);
+        }
     }
 
     println!();
@@ -115,12 +111,7 @@ struct ProviderHealthRow {
 
 /// Display provider health status
 async fn display_provider_health(cfg: &config::Config) -> Result<()> {
-    if !cfg.observability.enabled {
-        println!("Provider Health Status: Not available (observability disabled)\n");
-        return Ok(());
-    }
-
-    let pool = match connect_to_database(cfg).await {
+    let pool = match connect_to_database().await {
         Ok(pool) => pool,
         Err(e) => {
             println!("Provider Health Status: Not available ({})\n", e);
@@ -234,8 +225,8 @@ async fn display_provider_health(cfg: &config::Config) -> Result<()> {
 }
 
 /// Connect to the observability database
-async fn connect_to_database(cfg: &config::Config) -> Result<SqlitePool> {
-    let db_path = &cfg.observability.database_path;
+async fn connect_to_database() -> Result<SqlitePool> {
+    let db_path = config::OBSERVABILITY_DB_PATH;
     let pool = SqlitePool::connect(&format!("sqlite:{}", db_path)).await?;
     Ok(pool)
 }
@@ -301,13 +292,8 @@ async fn display_database_stats(pool: &SqlitePool, hours: u32) -> Result<()> {
 }
 
 /// Display token usage statistics table
-async fn display_token_usage(cfg: &config::Config, hours: u32, detailed: bool) -> Result<()> {
-    if !cfg.observability.enabled {
-        println!("Token Usage: Not available (observability disabled)");
-        return Ok(());
-    }
-
-    let pool = match connect_to_database(cfg).await {
+async fn display_token_usage(hours: u32, detailed: bool) -> Result<()> {
+    let pool = match connect_to_database().await {
         Ok(pool) => pool,
         Err(e) => {
             println!("Token Usage: Not available ({})", e);
@@ -556,13 +542,8 @@ fn truncate_model_name(name: &str) -> String {
 }
 
 /// Display quota status for all provider instances
-async fn display_quota_status(cfg: &config::Config) -> Result<()> {
-    if !cfg.observability.enabled {
-        println!("\nQuota Status: Not available (observability disabled)");
-        return Ok(());
-    }
-
-    let pool = match connect_to_database(cfg).await {
+async fn display_quota_status() -> Result<()> {
+    let pool = match connect_to_database().await {
         Ok(pool) => pool,
         Err(e) => {
             println!("\nQuota Status: Not available ({})", e);

@@ -371,17 +371,12 @@ pub struct OAuthProviderConfig {
     pub custom_headers: std::collections::HashMap<String, String>,
 }
 
+/// Hardcoded observability database path
+pub const OBSERVABILITY_DB_PATH: &str = "./data/observability.db";
+
 /// Observability configuration (logs, traces, metrics persistence)
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ObservabilityConfig {
-    /// Enable observability features (default: false)
-    #[serde(default)]
-    pub enabled: bool,
-
-    /// SQLite database path (default: "./data/observability.db")
-    #[serde(default = "default_database_path")]
-    pub database_path: String,
-
     /// Performance tuning
     #[serde(default)]
     pub performance: ObservabilityPerformanceConfig,
@@ -406,8 +401,6 @@ pub struct ObservabilityConfig {
 impl Default for ObservabilityConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
-            database_path: default_database_path(),
             performance: ObservabilityPerformanceConfig::default(),
             retention: ObservabilityRetentionConfig::default(),
             metrics_snapshot: MetricsSnapshotConfig::default(),
@@ -560,10 +553,6 @@ impl Default for QuotaRefreshConfig {
 }
 
 // Default value functions for observability config
-fn default_database_path() -> String {
-    "./data/observability.db".to_string()
-}
-
 fn default_batch_size() -> usize {
     100
 }

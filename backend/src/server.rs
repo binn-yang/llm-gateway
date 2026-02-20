@@ -35,21 +35,18 @@ pub async fn start_server(config: Config) -> Result<()> {
     cleanup_old_logs(7);
 
     // Initialize observability (SQLite-based request logger)
-    let (db_pool, request_logger) = if config.observability.enabled {
-        tracing::info!(
-            database = %config.observability.database_path,
-            "Initializing observability database"
-        );
+    let (db_pool, request_logger) = {
+        let db_path = crate::config::OBSERVABILITY_DB_PATH;
+        tracing::info!(database = %db_path, "Initializing observability database");
 
-        // Create SQLite connection pool
         // Ensure parent directory exists
-        if let Some(parent) = std::path::Path::new(&config.observability.database_path).parent() {
+        if let Some(parent) = std::path::Path::new(db_path).parent() {
             std::fs::create_dir_all(parent)?;
         }
 
         // Use SqliteConnectOptions for better control
         let options = sqlx::sqlite::SqliteConnectOptions::new()
-            .filename(&config.observability.database_path)
+            .filename(db_path)
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
@@ -121,9 +118,6 @@ pub async fn start_server(config: Config) -> Result<()> {
         tracing::info!("Request logger initialized with 10000 event buffer and cost calculation");
 
         (Some(pool), Some(logger))
-    } else {
-        tracing::info!("Observability disabled, skipping SQLite request logging");
-        (None, None)
     };
 
     // Wrap config in ArcSwap for atomic reload support
@@ -180,8 +174,8 @@ pub async fn start_server(config: Config) -> Result<()> {
         (None, None)
     };
 
-    // Start quota refresh background task if observability is enabled
-    if config.observability.enabled && config.observability.quota_refresh.enabled {
+    // Start quota refresh background task
+    if config.observability.quota_refresh.enabled {
         if let (Some(pool), Some(token_store)) = (db_pool.clone(), token_store.clone()) {
             let quota_db = crate::quota::db::QuotaDatabase::new(pool);
             let refresher = QuotaRefresher::new(quota_db, &config, token_store);
@@ -195,16 +189,14 @@ pub async fn start_server(config: Config) -> Result<()> {
         }
     }
 
-    // Start data cleanup task if observability is enabled
-    if config.observability.enabled {
-        if let Some(pool) = db_pool.clone() {
-            let _cleanup_task = crate::observability::cleanup::start_cleanup_task(
-                pool,
-                config.observability.clone(),
-            );
-            tracing::info!("数据清理任务已启动 (每天 {} 点执行)",
-                config.observability.retention.cleanup_hour);
-        }
+    // Start data cleanup task
+    if let Some(pool) = db_pool.clone() {
+        let _cleanup_task = crate::observability::cleanup::start_cleanup_task(
+            pool,
+            config.observability.clone(),
+        );
+        tracing::info!("数据清理任务已启动 (每天 {} 点执行)",
+            config.observability.retention.cleanup_hour);
     }
 
     // Create shared state
