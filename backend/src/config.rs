@@ -385,10 +385,6 @@ pub struct ObservabilityConfig {
     #[serde(default)]
     pub retention: ObservabilityRetentionConfig,
 
-    /// Metrics snapshot configuration
-    #[serde(default)]
-    pub metrics_snapshot: MetricsSnapshotConfig,
-
     /// Body logging configuration (request/response bodies)
     #[serde(default)]
     pub body_logging: BodyLoggingConfig,
@@ -403,7 +399,6 @@ impl Default for ObservabilityConfig {
         Self {
             performance: ObservabilityPerformanceConfig::default(),
             retention: ObservabilityRetentionConfig::default(),
-            metrics_snapshot: MetricsSnapshotConfig::default(),
             body_logging: BodyLoggingConfig::default(),
             quota_refresh: QuotaRefreshConfig::default(),
         }
@@ -445,10 +440,6 @@ pub struct ObservabilityRetentionConfig {
     #[serde(default = "default_spans_days")]
     pub spans_days: u64,
 
-    /// Metrics snapshots retention in days (default: 30)
-    #[serde(default = "default_metrics_snapshots_days")]
-    pub metrics_snapshots_days: u64,
-
     /// Hour of day to run cleanup (0-23, default: 3 for 3am)
     #[serde(default = "default_cleanup_hour")]
     pub cleanup_hour: u8,
@@ -459,28 +450,7 @@ impl Default for ObservabilityRetentionConfig {
         Self {
             logs_days: default_logs_days(),
             spans_days: default_spans_days(),
-            metrics_snapshots_days: default_metrics_snapshots_days(),
             cleanup_hour: default_cleanup_hour(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct MetricsSnapshotConfig {
-    /// Enable periodic metrics snapshots (default: true)
-    #[serde(default = "default_metrics_snapshot_enabled")]
-    pub enabled: bool,
-
-    /// Snapshot interval in seconds (default: 300 = 5 minutes)
-    #[serde(default = "default_snapshot_interval_seconds")]
-    pub interval_seconds: u64,
-}
-
-impl Default for MetricsSnapshotConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_metrics_snapshot_enabled(),
-            interval_seconds: default_snapshot_interval_seconds(),
         }
     }
 }
@@ -573,20 +543,8 @@ fn default_spans_days() -> u64 {
     7
 }
 
-fn default_metrics_snapshots_days() -> u64 {
-    30
-}
-
 fn default_cleanup_hour() -> u8 {
     3
-}
-
-fn default_metrics_snapshot_enabled() -> bool {
-    true
-}
-
-fn default_snapshot_interval_seconds() -> u64 {
-    300
 }
 
 fn default_body_logging_enabled() -> bool {

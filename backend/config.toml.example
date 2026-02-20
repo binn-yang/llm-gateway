@@ -218,13 +218,7 @@ max_buffer_size = 10000       # Ring buffer size to prevent blocking
 [observability.retention]
 logs_days = 7                     # Keep logs for 7 days
 spans_days = 7                    # Keep trace spans for 7 days
-metrics_snapshots_days = 30       # Keep metrics snapshots for 30 days
 cleanup_hour = 3                  # Run cleanup at 3 AM daily (0-23)
-
-# Metrics snapshots (for historical analysis)
-[observability.metrics_snapshot]
-enabled = true                    # Snapshot metrics to SQLite
-interval_seconds = 300            # Snapshot every 5 minutes
 
 # Body logging configuration (request/response bodies in JSONL logs)
 [observability.body_logging]

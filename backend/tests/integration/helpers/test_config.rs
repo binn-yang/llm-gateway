@@ -1,6 +1,6 @@
 use llm_gateway::config::{
     AnthropicInstanceConfig, ApiKeyConfig, BodyLoggingConfig, CacheConfig, Config, DiscoveryConfig,
-    MetricsSnapshotConfig, ObservabilityConfig, ObservabilityPerformanceConfig,
+    ObservabilityConfig, ObservabilityPerformanceConfig,
     ObservabilityRetentionConfig, ProviderInstanceConfig, ProvidersConfig, QuotaRefreshConfig,
     RoutingConfig, ServerConfig,
 };
@@ -105,12 +105,7 @@ pub fn create_stress_test_config(
             retention: ObservabilityRetentionConfig {
                 logs_days: 7,
                 spans_days: 7,
-                metrics_snapshots_days: 30,
                 cleanup_hour: 3,
-            },
-            metrics_snapshot: MetricsSnapshotConfig {
-                enabled: false,
-                interval_seconds: 300,
             },
             body_logging: BodyLoggingConfig::default(),
             quota_refresh: QuotaRefreshConfig::default(),
@@ -211,12 +206,7 @@ pub fn create_weighted_instance_config(mock_url: &str) -> Config {
             retention: ObservabilityRetentionConfig {
                 logs_days: 7,
                 spans_days: 7,
-                metrics_snapshots_days: 30,
                 cleanup_hour: 3,
-            },
-            metrics_snapshot: MetricsSnapshotConfig {
-                enabled: false,
-                interval_seconds: 300,
             },
             body_logging: BodyLoggingConfig::default(),
             quota_refresh: QuotaRefreshConfig::default(),
@@ -295,12 +285,7 @@ pub fn create_failover_config(primary_url: &str, backup_url: &str) -> Config {
             retention: ObservabilityRetentionConfig {
                 logs_days: 7,
                 spans_days: 7,
-                metrics_snapshots_days: 30,
                 cleanup_hour: 3,
-            },
-            metrics_snapshot: MetricsSnapshotConfig {
-                enabled: false,
-                interval_seconds: 300,
             },
             body_logging: BodyLoggingConfig::default(),
             quota_refresh: QuotaRefreshConfig::default(),
