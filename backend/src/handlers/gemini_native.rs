@@ -1,7 +1,7 @@
 use crate::{
     auth::AuthInfo,
     error::AppError,
-    models::gemini::{CountTokensRequest, GenerateContentRequest, GenerateContentResponse, Part},
+    models::gemini::{CountTokensRequest, GenerateContentRequest, GenerateContentResponse},
     observability::RequestEvent,
     providers,
     retry::RequestStatus,
@@ -116,29 +116,20 @@ pub async fn handle_generate_content_any(
     // 记录请求体（如果启用）
     let config = state.config.load();
     if config.observability.body_logging.enabled {
-        let body_content = if config.observability.body_logging.simple_mode {
-            extract_simple_request_gemini(&request)
-        } else {
-            let request_body = serde_json::to_string(&raw_request)
+        let request_body = serde_json::to_string(&raw_request)
                 .unwrap_or_else(|_| "{}".to_string());
             let redacted_body = crate::logging::redact_sensitive_data(
                 &request_body,
                 &config.observability.body_logging.redact_patterns
             );
-            let (final_body, _) = crate::logging::truncate_body(
+            let (body_content, _) = crate::logging::truncate_body(
                 redacted_body,
                 config.observability.body_logging.max_body_size
             );
-            final_body
-        };
 
         tracing::info!(
             parent: &span,
-            event_type = if config.observability.body_logging.simple_mode {
-                "simple_request"
-            } else {
-                "request_body"
-            },
+            event_type = "request_body",
             body = %body_content,
             body_size = body_content.len(),
             "Request body"
@@ -200,29 +191,20 @@ pub async fn handle_generate_content_any(
 
     // 记录响应体（如果启用）
     if config.observability.body_logging.enabled {
-        let body_content = if config.observability.body_logging.simple_mode {
-            extract_simple_response_gemini(&body)
-        } else {
-            let response_body = serde_json::to_string(&body)
+        let response_body = serde_json::to_string(&body)
                 .unwrap_or_else(|_| "{}".to_string());
             let redacted_response = crate::logging::redact_sensitive_data(
                 &response_body,
                 &config.observability.body_logging.redact_patterns
             );
-            let (final_response, _) = crate::logging::truncate_body(
+            let (body_content, _) = crate::logging::truncate_body(
                 redacted_response,
                 config.observability.body_logging.max_body_size
             );
-            final_response
-        };
 
         tracing::info!(
             parent: &span,
-            event_type = if config.observability.body_logging.simple_mode {
-                "simple_response"
-            } else {
-                "response_body"
-            },
+            event_type = "response_body",
             body = %body_content,
             body_size = body_content.len(),
             streaming = false,
@@ -361,29 +343,20 @@ pub async fn handle_stream_generate_content_any(
     // 记录请求体（如果启用）
     let config = state.config.load();
     if config.observability.body_logging.enabled {
-        let body_content = if config.observability.body_logging.simple_mode {
-            extract_simple_request_gemini(&request)
-        } else {
-            let request_body = serde_json::to_string(&raw_request)
+        let request_body = serde_json::to_string(&raw_request)
                 .unwrap_or_else(|_| "{}".to_string());
             let redacted_body = crate::logging::redact_sensitive_data(
                 &request_body,
                 &config.observability.body_logging.redact_patterns
             );
-            let (final_body, _) = crate::logging::truncate_body(
+            let (body_content, _) = crate::logging::truncate_body(
                 redacted_body,
                 config.observability.body_logging.max_body_size
             );
-            final_body
-        };
 
         tracing::info!(
             parent: &span,
-            event_type = if config.observability.body_logging.simple_mode {
-                "simple_request"
-            } else {
-                "request_body"
-            },
+            event_type = "request_body",
             body = %body_content,
             body_size = body_content.len(),
             "Request body"
@@ -507,27 +480,18 @@ pub async fn handle_stream_generate_content_any(
                 if config.observability.body_logging.enabled {
                     let accumulated_response = tracker_clone.get_accumulated_response();
 
-                    let body_content = if config.observability.body_logging.simple_mode {
-                        extract_simple_response_streaming_gemini(&accumulated_response)
-                    } else {
-                        let redacted = crate::logging::redact_sensitive_data(
+                    let redacted = crate::logging::redact_sensitive_data(
                             &accumulated_response,
                             &config.observability.body_logging.redact_patterns
                         );
-                        let (truncated, _) = crate::logging::truncate_body(
+                        let (body_content, _) = crate::logging::truncate_body(
                             redacted,
                             config.observability.body_logging.max_body_size
                         );
-                        truncated
-                    };
 
                     tracing::info!(
                         parent: &span_clone,
-                        event_type = if config.observability.body_logging.simple_mode {
-                            "simple_response"
-                        } else {
-                            "response_body"
-                        },
+                        event_type = "response_body",
                         body = %body_content,
                         body_size = body_content.len(),
                         streaming = true,
@@ -818,85 +782,4 @@ pub async fn handle_get_model(
             .unwrap_or_else(|_| axum::http::HeaderValue::from_static("invalid-request-id")),
     );
     Ok(resp)
-}
-
-// ============================================================================
-// Simple Mode Logging Helpers
-// ============================================================================
-
-/// 提取 Gemini 请求的简单日志（仅用户消息内容）
-fn extract_simple_request_gemini(request: &GenerateContentRequest) -> String {
-    let mut parts = Vec::new();
-
-    for content in &request.contents {
-        if content.role == "user" {
-            for part in &content.parts {
-                if let Part::Text { text } = part {
-                    parts.push(text.clone());
-                }
-            }
-        }
-    }
-
-    // 限制内容长度
-    let joined = parts.join(" ");
-    if joined.len() > 500 {
-        format!("{}...", &joined[..500])
-    } else {
-        joined
-    }
-}
-
-/// 提取 Gemini 非流式响应的简单日志
-fn extract_simple_response_gemini(response: &GenerateContentResponse) -> String {
-    let mut texts = Vec::new();
-
-    for candidate in &response.candidates {
-        for part in &candidate.content.parts {
-            if let Part::Text { text } = part {
-                texts.push(text.clone());
-            }
-        }
-    }
-
-    let joined = texts.join(" ");
-    if joined.len() > 1000 {
-        format!("{}...", &joined[..1000])
-    } else {
-        joined
-    }
-}
-
-/// 提取 Gemini 流式响应的简单日志
-fn extract_simple_response_streaming_gemini(accumulated: &str) -> String {
-    // 从累积的 SSE 响应中提取文本内容
-    // Gemini SSE 格式: data: {"candidates": [{"content": {"parts": [{"text": "..."}]}]}
-    let mut texts = Vec::new();
-
-    for line in accumulated.lines() {
-        if let Some(data) = line.strip_prefix("data: ") {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                if let Some(candidates) = json.get("candidates").and_then(|v| v.as_array()) {
-                    for candidate in candidates {
-                        if let Some(content) = candidate.get("content") {
-                            if let Some(parts) = content.get("parts").and_then(|v| v.as_array()) {
-                                for part in parts {
-                                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                                        texts.push(text.to_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let joined = texts.join(" ");
-    if joined.len() > 1000 {
-        format!("{}...", &joined[..1000])
-    } else {
-        joined
-    }
 }

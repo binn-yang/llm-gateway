@@ -68,31 +68,20 @@ pub async fn handle_chat_completions(
     // Log request body if enabled
     let config = state.config.load();
     if config.observability.body_logging.enabled {
-        let body_content = if config.observability.body_logging.simple_mode {
-            // Simple mode: extract only user messages (no redaction)
-            crate::logging::extract_simple_request_openai(&request)
-        } else {
-            // Full mode: log complete request with redaction
-            let request_body = serde_json::to_string(&request)
+        let request_body = serde_json::to_string(&request)
                 .unwrap_or_else(|_| "{}".to_string());
             let redacted_body = crate::logging::redact_sensitive_data(
                 &request_body,
                 &config.observability.body_logging.redact_patterns
             );
-            let (final_body, _) = crate::logging::truncate_body(
+            let (body_content, _) = crate::logging::truncate_body(
                 redacted_body,
                 config.observability.body_logging.max_body_size
             );
-            final_body
-        };
 
         tracing::info!(
             parent: &span,
-            event_type = if config.observability.body_logging.simple_mode {
-                "simple_request"
-            } else {
-                "request_body"
-            },
+            event_type = "request_body",
             body = %body_content,
             body_size = body_content.len(),
             truncated = false,
@@ -278,29 +267,18 @@ async fn handle_openai_request(
                     if config.observability.body_logging.enabled {
                         let accumulated_response = tracker_clone.get_accumulated_response();
 
-                        let body_content = if config.observability.body_logging.simple_mode {
-                            // Simple mode: extract only text deltas (no redaction)
-                            crate::logging::extract_simple_response_streaming(&accumulated_response)
-                        } else {
-                            // Full mode: log complete response with redaction
-                            let redacted = crate::logging::redact_sensitive_data(
+                        let redacted = crate::logging::redact_sensitive_data(
                                 &accumulated_response,
                                 &config.observability.body_logging.redact_patterns
                             );
-                            let (truncated_body, _) = crate::logging::truncate_body(
+                            let (body_content, _) = crate::logging::truncate_body(
                                 redacted,
                                 config.observability.body_logging.max_body_size
                             );
-                            truncated_body
-                        };
 
                         tracing::info!(
                             parent: &span_clone,
-                            event_type = if config.observability.body_logging.simple_mode {
-                                "simple_response"
-                            } else {
-                                "response_body"
-                            },
+                            event_type = "response_body",
                             body = %body_content,
                             body_size = body_content.len(),
                             truncated = false,
@@ -326,31 +304,20 @@ async fn handle_openai_request(
         // Log response body if enabled
         let config = state.config.load();
         if config.observability.body_logging.enabled {
-            let body_content = if config.observability.body_logging.simple_mode {
-                // Simple mode: extract only assistant text (no redaction)
-                crate::logging::extract_simple_response_openai(&body)
-            } else {
-                // Full mode: log complete response with redaction
-                let response_body = serde_json::to_string(&body)
+            let response_body = serde_json::to_string(&body)
                     .unwrap_or_else(|_| "{}".to_string());
                 let redacted_response = crate::logging::redact_sensitive_data(
                     &response_body,
                     &config.observability.body_logging.redact_patterns
                 );
-                let (final_response, _) = crate::logging::truncate_body(
+                let (body_content, _) = crate::logging::truncate_body(
                     redacted_response,
                     config.observability.body_logging.max_body_size
                 );
-                final_response
-            };
 
             tracing::info!(
                 parent: span,
-                event_type = if config.observability.body_logging.simple_mode {
-                    "simple_response"
-                } else {
-                    "response_body"
-                },
+                event_type = "response_body",
                 body = %body_content,
                 body_size = body_content.len(),
                 truncated = false,

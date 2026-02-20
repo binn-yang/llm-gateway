@@ -511,11 +511,6 @@ pub struct BodyLoggingConfig {
     #[serde(default)]
     pub redact_patterns: Vec<RedactPattern>,
 
-    /// Simple mode: only log user messages and assistant text responses
-    /// Excludes: system prompts, tool definitions, images, metadata
-    /// (default: false)
-    #[serde(default = "default_simple_mode")]
-    pub simple_mode: bool,
 }
 
 impl Default for BodyLoggingConfig {
@@ -525,7 +520,6 @@ impl Default for BodyLoggingConfig {
             max_body_size: default_max_body_size(),
             log_level: default_body_log_level(),
             redact_patterns: default_redact_patterns(),
-            simple_mode: default_simple_mode(),
         }
     }
 }
@@ -638,10 +632,6 @@ fn default_redact_patterns() -> Vec<RedactPattern> {
             replacement: "Bearer ***REDACTED***".to_string(),
         },
     ]
-}
-
-fn default_simple_mode() -> bool {
-    false
 }
 
 fn default_quota_enabled() -> bool {

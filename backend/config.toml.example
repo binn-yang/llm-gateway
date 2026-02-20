@@ -234,13 +234,7 @@ enabled = true                    # Enable body logging (default: true)
 max_body_size = 102400            # Max body size in bytes (100KB, default: 102400)
 log_level = "info"                # Log level for body content (default: "info")
 
-# Simple mode: Only log conversation content (user input + LLM text output)
-# When enabled, excludes: system prompts, tool definitions, images, metadata
-# No redaction applied in simple mode (assumes conversation content is safe)
-# (default: false)
-simple_mode = false
-
-# Redaction patterns (only used when simple_mode = false)
+# Redaction patterns
 [[observability.body_logging.redact_patterns]]
 pattern = "sk-[a-zA-Z0-9]{48}"
 replacement = "sk-***REDACTED***"
