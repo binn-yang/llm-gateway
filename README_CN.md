@@ -272,7 +272,6 @@ cp config.toml.example config.toml
 host = "0.0.0.0"
 port = 8080
 log_level = "info"
-log_format = "json"
 
 # API 密钥
 [[api_keys]]

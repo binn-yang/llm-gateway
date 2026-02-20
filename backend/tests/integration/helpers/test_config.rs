@@ -75,7 +75,6 @@ pub fn create_stress_test_config(
             host: "127.0.0.1".to_string(),
             port: 0,                       // 使用随机可用端口
             log_level: "warn".to_string(), // 减少日志噪音
-            log_format: "json".to_string(),
         },
         api_keys,
         routing: RoutingConfig {
@@ -143,7 +142,6 @@ pub fn create_weighted_instance_config(mock_url: &str) -> Config {
             host: "127.0.0.1".to_string(),
             port: 0,
             log_level: "warn".to_string(),
-            log_format: "json".to_string(),
         },
         api_keys: vec![ApiKeyConfig {
             key: "test-key".to_string(),
@@ -242,7 +240,6 @@ pub fn create_failover_config(primary_url: &str, backup_url: &str) -> Config {
             host: "127.0.0.1".to_string(),
             port: 0,
             log_level: "warn".to_string(),
-            log_format: "json".to_string(),
         },
         api_keys: vec![ApiKeyConfig {
             key: "test-key".to_string(),

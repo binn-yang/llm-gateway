@@ -19,7 +19,6 @@ pub struct ServerConfig {
     pub host: String,
     pub port: u16,
     pub log_level: String,
-    pub log_format: String,
 }
 
 impl Default for ServerConfig {
@@ -28,7 +27,6 @@ impl Default for ServerConfig {
             host: "0.0.0.0".to_string(),
             port: 8080,
             log_level: "info".to_string(),
-            log_format: "json".to_string(),
         }
     }
 }
@@ -1049,7 +1047,6 @@ mod tests {
                 host: "0.0.0.0".to_string(),
                 port: 8080,
                 log_level: "info".to_string(),
-                log_format: "json".to_string(),
             },
             api_keys: vec![ApiKeyConfig {
                 key: "test-key".to_string(),

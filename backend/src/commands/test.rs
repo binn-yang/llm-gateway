@@ -21,7 +21,6 @@ pub fn execute() -> Result<()> {
     println!("Configuration Summary:");
     println!("  Server: {}:{}", cfg.server.host, cfg.server.port);
     println!("  Log Level: {}", cfg.server.log_level);
-    println!("  Log Format: {}", cfg.server.log_format);
     println!();
 
     println!("  API Keys: {}", cfg.api_keys.len());

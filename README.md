@@ -102,7 +102,6 @@ Then edit `config.toml` and replace the placeholder values with your actual API 
 host = "0.0.0.0"
 port = 8080
 log_level = "info"
-log_format = "json"
 
 # Gateway API Keys
 [[api_keys]]

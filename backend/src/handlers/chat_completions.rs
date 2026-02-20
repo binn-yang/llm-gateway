@@ -928,7 +928,6 @@ mod tests {
                 host: "0.0.0.0".to_string(),
                 port: 8080,
                 log_level: "info".to_string(),
-                log_format: "json".to_string(),
             },
             api_keys: vec![ApiKeyConfig {
                 key: "sk-test".to_string(),

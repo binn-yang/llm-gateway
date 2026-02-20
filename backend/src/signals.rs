@@ -233,7 +233,6 @@ mod tests {
                 host: "127.0.0.1".to_string(),
                 port: 8080,
                 log_level: "info".to_string(),
-                log_format: "json".to_string(),
             },
             api_keys: vec![ApiKeyConfig {
                 key: "test-key".to_string(),
